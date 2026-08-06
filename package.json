@@ -1,0 +1,14 @@
+{
+  "name": "torn-war-call",
+  "version": "1.0.0",
+  "description": "Torn faction war call bot - hospital timer alerts to Discord",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "node-fetch": "^3.3.2"
+  }
+}
