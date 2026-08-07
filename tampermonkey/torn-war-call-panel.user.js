@@ -258,7 +258,7 @@ window.TWC.Travel = (function () {
 
     if (changed) {
       if (Debug) {
-        Debug.log(DEBUG.SEVERITY.INFO, 'Travel', `Travel phase: ${next.phase}${next.destination ? ' -> ' + next.destination : ''}`);
+        Debug.log(Debug.SEVERITY.INFO, 'travel', `Travel phase: ${next.phase}${next.destination ? ' -> ' + next.destination : ''}`);
       }
       listeners.forEach((fn) => { 
         try { fn(current); } catch (e) { 
@@ -1235,7 +1235,6 @@ window.TWC.UIRenderer = (function () {
 (function () {
   'use strict';
 
-  // Verify all modules are loaded
   const modules = [
     'Config', 'State', 'Debug', 'Travel', 'TravelDisplay',
     'API', 'HospitalTracker', 'WarDetector', 'UIRenderer', 'History'
