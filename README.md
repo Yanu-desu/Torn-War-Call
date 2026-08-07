@@ -24,16 +24,16 @@ hospital timer runs out.
 
 1. Install Tampermonkey.
 2. Go to the Control Panel.
-3. Add the script from `tampermonkey/torn-war-call-panel.user`.
+3. Add the script from `tampermonkey/torn-war-call-panel.user.js`.
 4. Go to Torn and reload.
 
 ## Development Notes
 
-* The travel feature will **not be implemented** and will be rolled back.
+* The travel feature will **not be implemented for now** and has been rolled back.
   I currently don't have enough knowledge to implement it properly, so it will
   remain on hold until help or better ideas are available.
-* Sorry for the UI clutter in the meantime. Some of the travel-related UI may
-  remain temporarily while the feature is being reworked or removed.
+* Sorry for the UI clutter from the previous travel implementation. The feature has
+  been rolled back for now while the implementation is being reworked.
 * Customizable UI, text, and additional quality-of-life features will be added
   soon.
 

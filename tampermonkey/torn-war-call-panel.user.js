@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn War Call Panel
 // @namespace    torn-war-call
-// @version      2.2.1
+// @version      2.2.2
 // @description  Live in-page war dashboard — state machine, structured debug, notification history, optional Discord alerts
 // @author       Yanu [3028844]
 // @match        https://www.torn.com/*
@@ -11,19 +11,187 @@
 // @connect      api.torn.com
 // @connect      discord.com
 // @connect      discordapp.com
-// @require      https://raw.githubusercontent.com/Yanu-desu/Torn-War-Call/main/modules/state.js
-// @require      https://raw.githubusercontent.com/Yanu-desu/Torn-War-Call/main/modules/debug.js
-// @require      https://raw.githubusercontent.com/Yanu-desu/Torn-War-Call/main/modules/history.js
-// @require      https://raw.githubusercontent.com/Yanu-desu/Torn-War-Call/main/modules/travel.js
+// @license       MIT
 // ==/UserScript==
 
 (function () {
   'use strict';
 
+  // ---------- Bundled module: state.js ----------
+
+  // Torn War Call — State module
+  // Single source of truth for the faction's war status. Every other module
+  // reads state through here instead of re-deriving it from raw API data.
+
+  window.TWC = window.TWC || {};
+
+  window.TWC.State = (function () {
+    'use strict';
+
+    const STATES = Object.freeze({
+      UNKNOWN: 'unknown',       // still syncing / not enough data yet — never guess past this
+      PEACE: 'peace',           // no war scheduled
+      WAR_PREP: 'war_prep',     // war scheduled, not started
+      ACTIVE_WAR: 'active_war', // war ongoing
+      WAR_ENDED: 'war_ended',   // war finished, within the post-war display window
+      FAILURE: 'failure',       // script-level failure — overrides everything else
+    });
+
+    let current = STATES.UNKNOWN;
+    let context = {};
+    const listeners = [];
+
+    function set(newState, newContext) {
+      newContext = newContext || {};
+      const changed = newState !== current || JSON.stringify(newContext) !== JSON.stringify(context);
+      if (!changed) return;
+
+      current = newState;
+      context = newContext;
+      listeners.forEach((fn) => {
+        try {
+          fn(current, context);
+        } catch (e) {
+          console.error('[TWC.State] listener threw', e);
+        }
+      });
+    }
+
+    function get() {
+      return { state: current, context };
+    }
+
+    function subscribe(fn) {
+      listeners.push(fn);
+      return function unsubscribe() {
+        const i = listeners.indexOf(fn);
+        if (i >= 0) listeners.splice(i, 1);
+      };
+    }
+
+    return { STATES, set, get, subscribe };
+  })();
+
+  // ---------- Bundled module: debug.js ----------
+
+  // Torn War Call — Debug module
+  // Structured logging with severity, source, and timestamp. Any module can log
+  // here; the UI queries it for display instead of each module keeping its own log.
+
+  window.TWC = window.TWC || {};
+
+  window.TWC.Debug = (function () {
+    'use strict';
+
+    const SEVERITY = Object.freeze({
+      INFO: 'info',
+      SUCCESS: 'success',
+      WARNING: 'warning',
+      ERROR: 'error',
+      CRITICAL: 'critical',
+    });
+
+    const SEVERITY_ORDER = [SEVERITY.INFO, SEVERITY.SUCCESS, SEVERITY.WARNING, SEVERITY.ERROR, SEVERITY.CRITICAL];
+    const MAX_LOGS = 300;
+
+    let logs = [];
+    const listeners = [];
+
+    function log(severity, source, message) {
+      const entry = { time: new Date(), severity, source, message };
+      logs.unshift(entry);
+      if (logs.length > MAX_LOGS) logs.pop();
+
+      const consoleMethod =
+        severity === SEVERITY.CRITICAL || severity === SEVERITY.ERROR ? 'error' :
+        severity === SEVERITY.WARNING ? 'warn' : 'log';
+      console[consoleMethod](`[TWC:${source}]`, message);
+
+      listeners.forEach((fn) => {
+        try { fn(entry); } catch (e) { /* never let a listener recursively break logging */ }
+      });
+
+      // A critical failure always overrides whatever state we're in.
+      if (severity === SEVERITY.CRITICAL && window.TWC.State) {
+        window.TWC.State.set(window.TWC.State.STATES.FAILURE, { reason: message, source });
+      }
+    }
+
+    function query(filters) {
+      filters = filters || {};
+      const severity = filters.severity || null;
+      const search = (filters.search || '').toLowerCase();
+
+      return logs.filter((entry) => {
+        if (severity && entry.severity !== severity) return false;
+        if (search) {
+          const haystack = `${entry.source} ${entry.message}`.toLowerCase();
+          if (!haystack.includes(search)) return false;
+        }
+        return true;
+      });
+    }
+
+    function clear() {
+      logs = [];
+    }
+
+    function onLog(fn) {
+      listeners.push(fn);
+      return function unsubscribe() {
+        const i = listeners.indexOf(fn);
+        if (i >= 0) listeners.splice(i, 1);
+      };
+    }
+
+    return { SEVERITY, SEVERITY_ORDER, log, query, clear, onLog };
+  })();
+
+  // ---------- Bundled module: history.js ----------
+
+  // Torn War Call — History module
+  // Tracks meaningful EVENTS (war detected, ping sent, settings changed...) as
+  // opposed to Debug's granular technical logs. Different audience, different purpose:
+  // this is "what happened", Debug is "what the code was doing".
+
+  window.TWC = window.TWC || {};
+
+  window.TWC.History = (function () {
+    'use strict';
+
+    const MAX_ENTRIES = 150;
+    let entries = [];
+    const listeners = [];
+
+    function record(eventType, message) {
+      const entry = { time: new Date(), eventType, message };
+      entries.unshift(entry);
+      if (entries.length > MAX_ENTRIES) entries.pop();
+
+      listeners.forEach((fn) => {
+        try { fn(entry); } catch (e) { /* don't let a bad listener break history */ }
+      });
+    }
+
+    function all() {
+      return entries;
+    }
+
+    function onRecord(fn) {
+      listeners.push(fn);
+      return function unsubscribe() {
+        const i = listeners.indexOf(fn);
+        if (i >= 0) listeners.splice(i, 1);
+      };
+    }
+
+    return { record, all, onRecord };
+  })();
+
   const BUILD_INFO = {
-    version: '2.2.1',
-    build: 4,
-    releaseDate: '2026-08-07',
+    version: '2.2.2',
+    build: 5,
+    releaseDate: '2026-08-08',
     initTime: new Date(),
   };
 
@@ -35,7 +203,6 @@
   const Debug = window.TWC.Debug;
   const State = window.TWC.State;
   const History = window.TWC.History;
-  const Travel = window.TWC.Travel;
 
   // ---------- Persisted config ----------
 
@@ -85,33 +252,6 @@
         onerror: () => reject(new Error('network error')),
       });
     });
-  }
-
-  // Travel isn't reliably exposed on the v2 endpoint yet per Torn's own Swagger
-  // notes ("if selections remain unaltered, they default to v1") — hitting v1
-  // directly for this one selection instead of guessing at a v2 path.
-  function tornGetV1(path) {
-    return new Promise((resolve, reject) => {
-      GM_xmlhttpRequest({
-        method: 'GET',
-        url: `https://api.torn.com${path}${path.includes('?') ? '&' : '?'}key=${config.apiKey}`,
-        onload: (res) => {
-          try {
-            const parsed = JSON.parse(res.responseText);
-            if (parsed.error) return reject(new Error(`${parsed.error.code}: ${parsed.error.error}`));
-            resolve(parsed);
-          } catch (e) {
-            reject(e);
-          }
-        },
-        onerror: () => reject(new Error('network error')),
-      });
-    });
-  }
-
-  async function fetchTravelStatus() {
-    const res = await tornGetV1('/user/?selections=travel');
-    Travel.update(res.travel, Debug);
   }
 
   const loggedStates = new Set(['Okay', 'Hospital', 'Jail']);
@@ -279,11 +419,6 @@
 
     await refreshWarState();
 
-    try {
-      await fetchTravelStatus();
-    } catch (e) {
-      Debug.log(Debug.SEVERITY.WARNING, 'travel', `Could not refresh travel status: ${e.message}`);
-    }
 
     try {
       data.ally = await fetchFactionMembers(config.ownFactionId);
@@ -347,14 +482,6 @@
     #twc-status .dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
     #twc-status.clickable { cursor: pointer; }
     #twc-status.clickable:hover { background: rgba(255,46,196,.08); }
-
-    #twc-travel { padding: 6px 10px; font-size: 11px; border-bottom: 1px solid rgba(0,234,255,.1); }
-    #twc-travel.empty { display: none; }
-    .twc-travel-primary { font-weight: bold; }
-    .twc-travel-secondary { opacity: .6; font-size: 10px; margin-top: 2px; }
-    .twc-travel-departed .twc-travel-primary { color: #7fdfff; }
-    .twc-travel-abroad .twc-travel-primary { color: #ffd166; }
-    .twc-travel-returning .twc-travel-primary { color: #39ff8a; }
 
     #twc-body { padding: 8px 10px; max-height: 380px; overflow-y: auto; font-size: 12px; }
     #twc-body.collapsed { display: none; }
@@ -443,16 +570,11 @@
       </span>
     </div>
     <div id="twc-status"><span class="dot"></span><span id="twc-status-label"></span></div>
-    <div id="twc-travel"></div>
     <div id="twc-body" class="${config.collapsed ? 'collapsed' : ''}">
       <div class="twc-section-title">Enemy — coming out</div>
       <div id="twc-enemy-list"></div>
-      <div class="twc-section-title">Enemy — traveling</div>
-      <div id="twc-enemy-traveling-list"></div>
       <div class="twc-section-title">Ally — you're almost out</div>
       <div id="twc-ally-list"></div>
-      <div class="twc-section-title">Ally — traveling</div>
-      <div id="twc-ally-traveling-list"></div>
     </div>
     <div id="twc-error"></div>
     <div id="twc-version"></div>
@@ -679,55 +801,6 @@
     History.record('state_change', `State changed to ${newState}`);
   });
 
-  Travel.onChange((t) => {
-    const labels = {
-      [Travel.PHASES.NONE]: 'Landed / not traveling',
-      [Travel.PHASES.DEPARTED]: `Travel started to ${t.destination}`,
-      [Travel.PHASES.ABROAD]: `Arrived abroad in ${t.destination}`,
-      [Travel.PHASES.RETURNING]: 'Return trip started',
-      [Travel.PHASES.ARRIVED]: 'Arrived back in Torn',
-    };
-    History.record('travel_change', labels[t.phase] || `Travel phase: ${t.phase}`);
-    renderTravel();
-  });
-
-  function fmtClock(unixTs) {
-    return new Date(unixTs * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  }
-
-  function renderTravel() {
-    const el = document.getElementById('twc-travel');
-    const t = Travel.get();
-
-    if (t.phase === Travel.PHASES.NONE || t.phase === Travel.PHASES.ARRIVED) {
-      el.className = 'empty';
-      el.innerHTML = '';
-      return;
-    }
-
-    const now = Math.floor(Date.now() / 1000);
-    const secondsLeft = t.arrivalTs ? Math.max(0, t.arrivalTs - now) : 0;
-
-    if (t.phase === Travel.PHASES.DEPARTED) {
-      // Outbound: we don't know the return ETA yet, so arrival-abroad is primary here.
-      el.className = 'twc-travel-departed';
-      el.innerHTML = `
-        <div class="twc-travel-primary">[OUTBOUND] ${t.destination} — ${fmtTime(secondsLeft)}</div>
-        <div class="twc-travel-secondary">Arriving abroad ~${fmtClock(t.arrivalTs)}</div>`;
-    } else if (t.phase === Travel.PHASES.ABROAD) {
-      el.className = 'twc-travel-abroad';
-      el.innerHTML = `
-        <div class="twc-travel-primary">[ABROAD] ${t.destination}</div>
-        <div class="twc-travel-secondary">No return timer until you start heading back</div>`;
-    } else if (t.phase === Travel.PHASES.RETURNING) {
-      // Return leg: this IS the number that matters for faction planning.
-      el.className = 'twc-travel-returning';
-      el.innerHTML = `
-        <div class="twc-travel-primary">[RETURNING] Back in Torn — ${fmtTime(secondsLeft)}</div>
-        <div class="twc-travel-secondary">ETA ${fmtClock(t.arrivalTs)}</div>`;
-    }
-  }
-
   // ---------- Main list rendering ----------
 
   function fmtTime(seconds) {
@@ -745,41 +818,6 @@
         .map((m) => ({ ...m, secondsLeft: m.until - now }))
         .sort((a, b) => a.secondsLeft - b.secondsLeft);
 
-    // Don't hardcode one exact spelling — match anything that looks like a
-    // travel state. Also don't require until>now: Torn may not expose an
-    // exact arrival timestamp for other players (privacy), so someone can be
-    // genuinely traveling with until=0 — show them with an unknown ETA rather
-    // than silently dropping them.
-    const filterTraveling = (list) =>
-      list.filter((m) => /travel/i.test(m.state))
-        .map((m) => ({ ...m, secondsLeft: m.until > now ? m.until - now : null }))
-        .sort((a, b) => (a.secondsLeft ?? Infinity) - (b.secondsLeft ?? Infinity));
-
-    const enemyList = filterByStatus(data.enemy, 'Hospital');
-    const allyList = filterByStatus(data.ally, 'Hospital');
-    const enemyTraveling = filterTraveling(data.enemy);
-    const allyTraveling = filterTraveling(data.ally);
-
-    document.getElementById('twc-enemy-list').innerHTML = enemyList.length
-      ? enemyList.map((m) => `<div class="twc-row ${m.secondsLeft <= WARN_WINDOW_SECONDS ? 'warn' : ''}">
-          <span>${m.name} [${m.level}]</span><span>${fmtTime(m.secondsLeft)}</span></div>`).join('')
-      : `<div class="twc-empty">nobody hospitalized</div>`;
-
-    document.getElementById('twc-ally-list').innerHTML = allyList.length
-      ? allyList.map((m) => `<div class="twc-row ${m.secondsLeft <= WARN_WINDOW_SECONDS ? 'ally-warn' : ''}">
-          <span>${m.name}</span><span>${fmtTime(m.secondsLeft)}</span></div>`).join('')
-      : `<div class="twc-empty">nobody hospitalized</div>`;
-
-    document.getElementById('twc-enemy-traveling-list').innerHTML = enemyTraveling.length
-      ? enemyTraveling.map((m) => `<div class="twc-row">
-          <span>${m.name} — ${m.description || 'Traveling'}</span><span>${m.secondsLeft === null ? 'ETA unknown' : fmtTime(m.secondsLeft)}</span></div>`).join('')
-      : `<div class="twc-empty">nobody traveling</div>`;
-
-    document.getElementById('twc-ally-traveling-list').innerHTML = allyTraveling.length
-      ? allyTraveling.map((m) => `<div class="twc-row">
-          <span>${m.name} — ${m.description || 'Traveling'}</span><span>${m.secondsLeft === null ? 'ETA unknown' : fmtTime(m.secondsLeft)}</span></div>`).join('')
-      : `<div class="twc-empty">nobody traveling</div>`;
-
     document.getElementById('twc-error').textContent = data.lastError || '';
     document.getElementById('twc-version').textContent =
       `v${BUILD_INFO.version} · build ${BUILD_INFO.build} · ${BUILD_INFO.releaseDate} · init ${BUILD_INFO.initTime.toLocaleTimeString()}`;
@@ -788,12 +826,11 @@
   // ---------- Boot ----------
 
   renderStatus();
-  renderTravel();
   render();
   Debug.log(Debug.SEVERITY.SUCCESS, 'init', `War Call panel initialized (v${BUILD_INFO.version})`);
   History.record('script_initialized', `War Call started, v${BUILD_INFO.version}`);
 
-  setInterval(() => { render(); renderTravel(); }, TICK_MS);
+  setInterval(render, TICK_MS);
   setInterval(pollData, POLL_INTERVAL_MS);
   pollData();
 })();

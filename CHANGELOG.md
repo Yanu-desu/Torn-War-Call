@@ -1,6 +1,13 @@
-﻿# Changelog
+# Changelog
 
 All notable changes to this project are documented here.
+
+## 2.2.2 — 2026-08-08
+
+- Rolled back the travel feature for now.
+- Removed the travel UI and Torn v1 travel polling from the userscript.
+- Bundled the state, debug, and history modules into the Tampermonkey release so Greasy Fork does not need external `@require` scripts.
+- Removed the unused travel module from the release source.
 
 ## [1.1.0] - 2026-08-07
 ### Added
