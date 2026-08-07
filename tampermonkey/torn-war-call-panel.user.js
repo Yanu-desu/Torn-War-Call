@@ -13,9 +13,8 @@
 // ==/UserScript==
 
 // CONSOLIDATED BUILD: All modules bundled for single-file deployment
-// Module load order is guaranteed in this file
 
-// ==================== state.js.toUpper() ====================
+// ==================== state ====================
 // Torn War Call â€” State module
 // Single source of truth for the faction's war status. Every other module
 // reads state through here instead of re-deriving it from raw API data.
@@ -78,8 +77,7 @@ window.TWC.State = (function () {
 })();
 
 
-
-// ==================== debug.js.toUpper() ====================
+// ==================== debug ====================
 // Torn War Call â€” Debug module
 // Structured logging with severity, source, and timestamp. Any module can log
 // here; the UI queries it for display instead of each module keeping its own log.
@@ -154,8 +152,7 @@ window.TWC.Debug = (function () {
 })();
 
 
-
-// ==================== history.js.toUpper() ====================
+// ==================== history ====================
 // Torn War Call â€” History module
 // Tracks meaningful EVENTS (war detected, ping sent, settings changed...) as
 // opposed to Debug's granular technical logs. Different audience, different purpose:
@@ -196,8 +193,7 @@ window.TWC.History = (function () {
 })();
 
 
-
-// ==================== travel.js.toUpper() ====================
+// ==================== travel ====================
 // Torn War Call â€” Travel module
 // Tracks the KEY OWNER's own travel status. Torn's API only exposes a live
 // travel timer for the account the key belongs to â€” there is no way to see
@@ -286,8 +282,7 @@ window.TWC.Travel = (function () {
 })();
 
 
-
-// ==================== config.js.toUpper() ====================
+// ==================== config ====================
 // Torn War Call â€” Config module
 // Centralized configuration with validation and persistence.
 // Provides defaults, loads from GM storage, and validates required fields.
@@ -384,8 +379,7 @@ window.TWC.Config = (function () {
 })();
 
 
-
-// ==================== api.js.toUpper() ====================
+// ==================== api ====================
 // Torn War Call â€” API module
 // Centralized Torn API interaction layer. Handles requests with proper error handling
 // and the quirk that Torn returns HTTP 200 even on logical errors.
@@ -471,8 +465,7 @@ window.TWC.API = (function () {
 })();
 
 
-
-// ==================== travel-display.js.toUpper() ====================
+// ==================== travel-display ====================
 // Torn War Call â€” Travel Display module
 // Formats travel state for UI consumption. Transforms raw travel data into
 // human-readable ETAs and status messages. Integrates with Travel module.
@@ -575,8 +568,7 @@ window.TWC.TravelDisplay = (function () {
 })();
 
 
-
-// ==================== war-detector.js.toUpper() ====================
+// ==================== war-detector ====================
 // Torn War Call â€” War Detector module
 // Polls faction war status and drives state transitions.
 // Tracks war lifecycle: Peace -> Prep -> Active -> Ended -> Peace
@@ -661,8 +653,7 @@ window.TWC.WarDetector = (function () {
 })();
 
 
-
-// ==================== hospital-tracker.js.toUpper() ====================
+// ==================== hospital-tracker ====================
 // Torn War Call â€” Hospital Tracker module
 // Polls faction rosters and tracks hospital status.
 // De-duplicates alerts per hospital stay; fires event when someone enters warn window.
@@ -769,8 +760,7 @@ window.TWC.HospitalTracker = (function () {
 })();
 
 
-
-// ==================== ui-renderer.js.toUpper() ====================
+// ==================== ui-renderer ====================
 // Torn War Call â€” UI Renderer module
 // Handles all presentation and DOM manipulation. Pure UI layer with no business logic.
 // Listens to State and other modules, renders when data changes.
@@ -1239,7 +1229,6 @@ window.TWC.UIRenderer = (function () {
 })();
 
 
-
 // ==================== MAIN INITIALIZATION ====================
 
 (function () {
@@ -1270,7 +1259,7 @@ window.TWC.UIRenderer = (function () {
 
   async function initialize() {
     try {
-      DEBUG.log(DEBUG.SEVERITY.INFO, 'Main', Initializing TWC v\);
+      DEBUG.log(DEBUG.SEVERITY.INFO, 'Main', `Initializing TWC v${CONFIG.VERSION}`);
 
       CONFIG.load();
       const configErrors = CONFIG.validate();
@@ -1284,7 +1273,7 @@ window.TWC.UIRenderer = (function () {
       }
 
       CONFIG.save('lastInitTime', Math.floor(Date.now() / 1000));
-      HISTORY.record('init', Script initialized v\);
+      HISTORY.record('init', `Script initialized v${CONFIG.VERSION}`);
 
       UI.initialize();
 
@@ -1296,14 +1285,14 @@ window.TWC.UIRenderer = (function () {
           const travel = await API.getUserTravel(CONFIG.get('apiKey'));
           TRAVEL.update(travel, DEBUG);
         } catch (e) {
-          DEBUG.log(DEBUG.SEVERITY.WARNING, 'Main', Travel update failed: \);
+          DEBUG.log(DEBUG.SEVERITY.WARNING, 'Main', `Travel update failed: ${e.message}`);
         }
       }, 15000);
 
       STATE.set(STATE.STATES.UNKNOWN, { waiting: 'first poll' });
 
       HOSPITAL.onAlert(({ side, member, secondsLeft }) => {
-        HISTORY.record('ping', \: \ in \s);
+        HISTORY.record('ping', `${side === 'ally' ? 'Ally' : 'Enemy'}: ${member.name} in ${secondsLeft}s`);
       });
 
       STATE.subscribe((state, context) => {
@@ -1314,7 +1303,7 @@ window.TWC.UIRenderer = (function () {
 
       DEBUG.log(DEBUG.SEVERITY.SUCCESS, 'Main', 'Initialization complete');
     } catch (e) {
-      DEBUG.log(DEBUG.SEVERITY.CRITICAL, 'Main', Initialization failed: \);
+      DEBUG.log(DEBUG.SEVERITY.CRITICAL, 'Main', `Initialization failed: ${e.message}`);
       STATE.set(STATE.STATES.FAILURE, { reason: e.message });
     }
   }
