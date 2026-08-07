@@ -1,5 +1,7 @@
 # Torn War Call
 
+See [CHANGELOG.md](./CHANGELOG.md) for version history.
+
 Read-only faction war intel bot. Polls the Torn API for hospital status on both
 your faction and the enemy faction, and pings Discord ~60s before someone's
 hospital timer runs out.
