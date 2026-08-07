@@ -40,5 +40,3 @@ hospital timer runs out.
 ## License
 
 See the [LICENSE](./LICENSE) file for licensing information.
-
-### Grease Fork and Forum Launch Post soon
