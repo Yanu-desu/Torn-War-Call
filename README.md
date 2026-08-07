@@ -1,6 +1,6 @@
 # Torn War Call
 
-See [CHANGELOG.md](./CHANGELOG.md) for version history.
+See [Changelog](./CHANGELOG.md) for version history.
 
 Read-only faction war intel bot. Polls the Torn API for hospital status on both
 your faction and the enemy faction, and pings Discord ~60s before someone's
@@ -24,7 +24,7 @@ hospital timer runs out.
 
 1. Install Tampermonkey.
 2. Go to the Control Panel.
-3. Add the script from `tampermonkey/torn-war-call-panel.user`.
+3. Add the script from the [Greasy Fork](https://greasyfork.org/en/scripts/590344-torn-war-call-panel).
 4. Go to Torn and reload.
 
 ## Development Notes
