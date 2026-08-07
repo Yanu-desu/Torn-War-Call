@@ -142,6 +142,11 @@ window.TWC.Debug = (function () {
     logs = [];
   }
 
+  function getLogs(count) {
+    count = count || 10;
+    return logs.slice(0, count);
+  }
+
   function onLog(fn) {
     listeners.push(fn);
     return function unsubscribe() {
@@ -150,7 +155,7 @@ window.TWC.Debug = (function () {
     };
   }
 
-  return { SEVERITY, SEVERITY_ORDER, log, query, clear, onLog };
+  return { SEVERITY, SEVERITY_ORDER, log, query, clear, getLogs, onLog };
 })();
 
 // === MODULE: history ===
@@ -1055,6 +1060,17 @@ window.TWC.UIRenderer = (function () {
     document.getElementById('twc-debug-btn').addEventListener('click', openDebug);
     document.getElementById('twc-settings-btn').addEventListener('click', openSettings);
 
+    // Keyboard shortcut: Ctrl+Shift+T to toggle visibility
+    document.addEventListener('keydown', (e) => {
+      if (e.ctrlKey && e.shiftKey && e.key === 'T') {
+        if (CONFIG.get('panelHidden')) {
+          showPanel();
+        } else {
+          hidePanel();
+        }
+      }
+    });
+
     makeDraggable(panel, document.getElementById('twc-header'));
   }
 
@@ -1087,8 +1103,10 @@ window.TWC.UIRenderer = (function () {
   }
 
   function hidePanel() {
-    CONFIG.save('panelHidden', true);
-    if (panelElement) panelElement.classList.add('hidden');
+    if (confirm('Hide Torn War Call panel? (Press Ctrl+Shift+T to show again)')) {
+      CONFIG.save('panelHidden', true);
+      if (panelElement) panelElement.classList.add('hidden');
+    }
   }
 
   function showPanel() {
@@ -1097,13 +1115,16 @@ window.TWC.UIRenderer = (function () {
   }
 
   function openDebug() {
-    // TODO: Implement debug panel
-    if (DEBUG) DEBUG.log(DEBUG.SEVERITY.INFO, 'UI', 'Debug panel requested');
+    alert('[TWC] Debug Panel\n\nRecent logs:\n' + 
+      DEBUG.getLogs().slice(-10).map(log => 
+        `[${log.severity}] ${log.source}: ${log.message}`
+      ).join('\n'));
   }
 
   function openSettings() {
-    // TODO: Implement settings panel
-    if (DEBUG) DEBUG.log(DEBUG.SEVERITY.INFO, 'UI', 'Settings panel requested');
+    const apiKey = CONFIG.get('apiKey');
+    const factionId = CONFIG.get('ownFactionId');
+    alert(`[TWC] Settings\n\nAPI Key: ${apiKey ? '***' + apiKey.slice(-4) : 'NOT SET'}\nFaction ID: ${factionId || 'NOT SET'}\n\nTo change settings, run in console:\nGM_setValue('twc_apiKey', 'YOUR_KEY');\nGM_setValue('twc_ownFactionId', 'YOUR_ID');\nlocation.reload();`);
   }
 
   function updateStatus(state, context) {

@@ -60,6 +60,11 @@ window.TWC.Debug = (function () {
     logs = [];
   }
 
+  function getLogs(count) {
+    count = count || 10;
+    return logs.slice(0, count);
+  }
+
   function onLog(fn) {
     listeners.push(fn);
     return function unsubscribe() {
@@ -68,5 +73,5 @@ window.TWC.Debug = (function () {
     };
   }
 
-  return { SEVERITY, SEVERITY_ORDER, log, query, clear, onLog };
+  return { SEVERITY, SEVERITY_ORDER, log, query, clear, getLogs, onLog };
 })();
