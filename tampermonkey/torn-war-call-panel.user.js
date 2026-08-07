@@ -11,6 +11,7 @@
 // @connect      api.torn.com
 // @connect      discord.com
 // @connect      discordapp.com
+// @license       MIT
 // ==/UserScript==
 
 (function () {
