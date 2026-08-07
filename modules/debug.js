@@ -1,4 +1,4 @@
-// Torn War Call - Debug module
+// Torn War Call — Debug module
 // Structured logging with severity, source, and timestamp. Any module can log
 // here; the UI queries it for display instead of each module keeping its own log.
 
@@ -60,11 +60,6 @@ window.TWC.Debug = (function () {
     logs = [];
   }
 
-  function getLogs(count) {
-    count = count || 10;
-    return logs.slice(0, count);
-  }
-
   function onLog(fn) {
     listeners.push(fn);
     return function unsubscribe() {
@@ -73,5 +68,5 @@ window.TWC.Debug = (function () {
     };
   }
 
-  return { SEVERITY, SEVERITY_ORDER, log, query, clear, getLogs, onLog };
+  return { SEVERITY, SEVERITY_ORDER, log, query, clear, onLog };
 })();
