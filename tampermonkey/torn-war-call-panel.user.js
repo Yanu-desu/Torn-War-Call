@@ -3,7 +3,7 @@
 // @namespace    torn-war-call
 // @version      2.2.1
 // @description  Live in-page war dashboard — state machine, structured debug, notification history, optional Discord alerts
-// @author       you
+// @author       Yanu [3028844]
 // @match        https://www.torn.com/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
