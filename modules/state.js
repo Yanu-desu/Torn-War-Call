@@ -25,8 +25,10 @@ window.TWC.State = (function () {
     const changed = newState !== current || JSON.stringify(newContext) !== JSON.stringify(context);
     if (!changed) return;
 
+    const oldState = current;
     current = newState;
     context = newContext;
+
     listeners.forEach((fn) => {
       try {
         fn(current, context);
@@ -42,6 +44,12 @@ window.TWC.State = (function () {
 
   function subscribe(fn) {
     listeners.push(fn);
+    // Call immediately with current state
+    try {
+      fn(current, context);
+    } catch (e) {
+      console.error('[TWC.State] Initial subscriber call threw', e);
+    }
     return function unsubscribe() {
       const i = listeners.indexOf(fn);
       if (i >= 0) listeners.splice(i, 1);

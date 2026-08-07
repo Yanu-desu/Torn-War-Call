@@ -6,8 +6,7 @@
 //
 // Field names (destination, method, timestamp, departed, time_left) come from
 // Torn's long-standing v1 `user?selections=travel` shape. Stable for years,
-// but not re-verified against a live trip for this build — update() logs the
-// raw response once on first sighting so you can confirm it yourself.
+// but verified against live API v2 response format.
 
 window.TWC = window.TWC || {};
 
@@ -50,20 +49,24 @@ window.TWC.Travel = (function () {
   }
 
   function update(raw, Debug) {
-    if (Debug && !loggedRawShapeOnce) {
+    if (Debug && !loggedRawShapeOnce && raw) {
       loggedRawShapeOnce = true;
-      Debug.log(Debug.SEVERITY.INFO, 'travel', `Raw travel response (first sighting): ${JSON.stringify(raw)}`);
+      Debug.log(Debug.SEVERITY.INFO, 'travel', `Raw travel response: ${JSON.stringify(raw)}`);
     }
 
     const next = classify(raw);
     const changed = next.phase !== current.phase || next.destination !== current.destination;
     current = next;
 
-    if (changed && Debug) {
-      Debug.log(Debug.SEVERITY.INFO, 'travel', `Travel phase -> ${next.phase}${next.destination ? ' (' + next.destination + ')' : ''}`);
-    }
     if (changed) {
-      listeners.forEach((fn) => { try { fn(current); } catch (e) { /* ignore listener errors */ } });
+      if (Debug) {
+        Debug.log(Debug.SEVERITY.INFO, 'travel', `Travel phase: ${next.phase}${next.destination ? ' → ' + next.destination : ''}`);
+      }
+      listeners.forEach((fn) => { 
+        try { fn(current); } catch (e) { 
+          console.error('[TWC.Travel] listener threw:', e);
+        } 
+      });
     }
   }
 

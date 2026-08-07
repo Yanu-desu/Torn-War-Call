@@ -1,48 +1,162 @@
 # Torn War Call
 
-See [CHANGELOG.md](./CHANGELOG.md) for version history.
+A modular Tampermonkey userscript for Torn.com that displays faction war status, hospital timers, and personal travel information. Designed for coordination during faction wars.
 
-Read-only faction war intel bot. Polls the Torn API for hospital status on both
-your faction and the enemy faction, and pings Discord ~60s before someone's
-hospital timer runs out.
+## What It Does
 
-## What it does
-- Detects your active ranked war automatically (or use a pinned `ENEMY_FACTION_ID`).
-- Polls own + enemy faction rosters on an interval.
-- Fires a Discord embed when an **enemy** is ~1 min from leaving hospital (call to hit).
-- Fires a Discord embed when an **ally** is ~1 min from leaving hospital (heads up to move).
-- De-dupes alerts per hospital stay — you get one ping, not one every poll cycle.
+- **War State Tracking** — Detects active ranked wars and displays status (Peace, Prep, Active, Ended)
+- **Hospital Timers** — Shows ally and enemy faction members in hospital, sorted by time remaining
+- **Travel Tracking** — Displays your personal travel status including ETA and time remaining
+- **Smart Alerts** — Notifies when faction members are within 60 seconds of leaving hospital
+- **Persistent Storage** — Remembers settings between sessions
+- **Debug System** — Tracks events and logs for troubleshooting
 
-## What it deliberately does NOT do
-- No auto-attacking. No auto-anything on Torn's side. This only reads data and
-  posts to Discord. Wire up attack automation and you're gambling with a ban —
-  not my problem to solve, and you shouldn't want it solved.
+## Installation
 
-## Setup
-1. `npm install`
-2. `cp .env.example .env` and fill in:
-   - `TORN_API_KEY` — a Limited or Full Access key works; you only need read access to faction basic/member data.
-   - `OWN_FACTION_ID`
-   - `DISCORD_WEBHOOK_ENEMY` / `DISCORD_WEBHOOK_ALLY` — Discord channel → Integrations → Webhooks.
-   - Optional: `DISCORD_ENEMY_ROLE_ID` to @mention a role like "Hitters".
-   - Optional: `DISCORD_ID_MAP` to @mention specific Discord users on ally alerts.
-3. `npm start`
+1. Install [Tampermonkey](https://www.tampermonkey.net/) or similar userscript manager
+2. Copy the script code from `tampermonkey/torn-war-call-panel.user.js` into a new Tampermonkey script
+3. Save and enable the script
+4. Visit Torn.com and provide:
+   - **Torn API Key** (get from Torn.com Settings → API)
+   - **Your Faction ID**
+   - **Enemy Faction ID** (optional — auto-detected during active wars)
 
-## Tuning notes (read this before you complain it "missed" a call)
-- `POLL_INTERVAL_MS` is your real accuracy ceiling. A 60s warn window with a
-  10s poll interval means your worst-case notice is ~50s, not 60s. Don't set
-  this above 15000 during an active war or you'll get sniped by your own lag.
-- Torn's API rate limit is per-key. This script makes 2 calls per poll cycle
-  (own roster + enemy roster) plus 1 war-status check occasionally. At a 10s
-  interval that's ~12-13 calls/min — nowhere near the limit, so don't "optimize"
-  this by stretching the interval unless you're running multiple bots on one key.
-- Torn tweaks `/v2/*` response shapes sometimes. If members show up as
-  `Unknown` state, check the field names against the API Playground
-  (torn.com/api.html) and fix `tornApi.js` — the mapping is isolated there
-  on purpose so nothing else needs to change.
+## Architecture
 
-## Deploying so it actually runs during a war
-Run it somewhere that doesn't sleep when your laptop closes: a small VPS,
-a Raspberry Pi, or a free-tier box with `pm2` or a systemd service keeping
-`npm start` alive. A war-call bot that dies when you tab out is a war-call
-bot that gets someone's target un-called mid-chain.
+v2.0.0 introduces a modular, state-driven architecture. See [ARCHITECTURE.md](./ARCHITECTURE.md) for detailed documentation on:
+- Module responsibilities
+- State machine
+- Data flow
+- Error handling
+- Future enhancements
+
+**Module Overview:**
+- `state.js` — Centralized war status state machine
+- `debug.js` — Structured logging system
+- `history.js` — User event tracking
+- `travel.js` — Personal travel classification
+- `config.js` — Settings management
+- `api.js` — Torn API wrapper
+- `war-detector.js` — War status polling
+- `hospital-tracker.js` — Roster and hospital polling
+- `travel-display.js` — Travel formatting for UI
+- `ui-renderer.js` — Main UI panel
+
+## Configuration
+
+Settings are stored in browser storage and configured via the UI (Settings button). Advanced users can configure directly:
+
+```javascript
+// In browser console while on Torn.com
+window.TWC.Config.save('warnWindowSeconds', 45);  // Alert threshold
+window.TWC.Config.save('hospitalPollIntervalMs', 10000);  // Poll frequency
+window.TWC.Config.get();  // View all settings
+```
+
+## Keyboard Shortcuts & Controls
+
+- **Drag header** — Move panel
+- **Toggle arrow** — Collapse/expand panel
+- **⚙ button** — Settings (v2.1+)
+- **🔧 button** — Debug panel (v2.1+)
+- **✕ button** — Hide panel (click again to restore)
+
+## Troubleshooting
+
+### "Missing required modules"
+One or more modules failed to load. Check:
+- All module files are present
+- Load order is correct (state → debug → history → travel → config → api → war-detector → hospital-tracker → travel-display → ui-renderer)
+- No browser extensions are blocking the script
+
+### "API key not working"
+- Verify key has **faction read access** (Settings → API → Selections)
+- Test the key manually in [Torn API Playground](https://www.torn.com/api.html)
+
+### Hospital timers not updating
+- Check that API key has **faction member** read access
+- Verify both factions are accessible (may require VPN if accessing certain factions)
+- Run `window.TWC.HospitalTracker.poll()` to force an update
+
+### Travel not showing
+- Personal travel only works if your API key is a **user key** (full account access)
+- Faction-scoped keys cannot access personal travel data
+
+## Browser Compatibility
+
+Tested on:
+- Chrome/Chromium (latest)
+- Firefox (latest)
+- Edge (latest)
+
+Requires Tampermonkey or equivalent userscript manager.
+
+## Upgrading from v1.0.0
+
+v2.0.0 is a major rewrite with **breaking changes**:
+- Settings key prefix changed (`twc_` → more specific keys)
+- Panel layout redesigned with status header
+- Module structure completely different
+
+**Migration:**
+1. Uninstall v1.0.0 from Tampermonkey
+2. Install v2.0.0
+3. Re-enter your API key and faction IDs in the Settings panel
+4. Old settings will not transfer; this is intentional for a clean slate
+
+## Performance
+
+- War detection polls every **30 seconds** (configurable)
+- Hospital tracking polls every **12 seconds** (configurable)
+- Travel updates every **15 seconds**
+- UI countdown updates every **second**
+
+Designed to be lightweight — minimal impact on browsing experience.
+
+## Future Roadmap
+
+**Planned for v2.1:**
+- Dedicated Settings panel
+- Debug panel with log filtering
+- Health monitor (system diagnostics)
+- Faction page detection (auto-hide outside faction)
+
+**Planned for v2.2:**
+- Resizable/collapsible panel
+- Browser notifications
+- Custom ping configuration (up to 3 slots)
+- Config import/export
+
+**Planned for v2.3+:**
+- Sound alerts
+- Discord webhook integration
+- Dark/light theme detection
+- Role-based settings
+
+## Known Limitations
+
+- **No Discord integration yet** — See [Discord bot](../src/) for server-side option
+- **Single key only** — Cannot track multiple faction members' personal travel
+- **War end detection** — Relies on API `end` timestamp (may lag slightly)
+- **Mobile not supported** — Designed for desktop browser
+
+## Development
+
+See [ARCHITECTURE.md](./ARCHITECTURE.md) for contributing guidelines and testing instructions.
+
+### Running Locally
+
+All modules are in `/modules/`, main script is in `/tampermonkey/`.
+
+To test:
+1. Use Tampermonkey's "Create userscript from URL" to load local files
+2. Or manually copy/paste code into Tampermonkey
+3. Use browser console (`F12`) to access debug API
+
+## License
+
+See [LICENSE](./LICENSE) file.
+
+## Support
+
+For issues, suggestions, or feature requests, check the GitHub issues or contact the development team.
