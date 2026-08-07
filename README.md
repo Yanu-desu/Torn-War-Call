@@ -24,7 +24,7 @@ hospital timer runs out.
 
 1. Install Tampermonkey.
 2. Go to the Control Panel.
-3. Add the script from `tampermonkey/torn-war-call-panel.user.js`.
+3. Add the script from [Greasy Fork](https://greasyfork.org/en/scripts/590344-torn-war-call-panel).
 4. Go to Torn and reload.
 
 ## Development Notes
@@ -41,4 +41,4 @@ hospital timer runs out.
 
 See the [LICENSE](./LICENSE) file for licensing information.
 
-### Grease Fork and Forum Launch Post soon
+### Forum Launch Post soon
