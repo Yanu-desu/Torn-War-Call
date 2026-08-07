@@ -1,4 +1,4 @@
-// Torn War Call — Travel Display module
+// Torn War Call - Travel Display module
 // Formats travel state for UI consumption. Transforms raw travel data into
 // human-readable ETAs and status messages. Integrates with Travel module.
 

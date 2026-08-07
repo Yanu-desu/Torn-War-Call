@@ -1,4 +1,4 @@
-// Torn War Call — Hospital Tracker module
+// Torn War Call - Hospital Tracker module
 // Polls faction rosters and tracks hospital status.
 // De-duplicates alerts per hospital stay; fires event when someone enters warn window.
 

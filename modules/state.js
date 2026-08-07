@@ -1,4 +1,4 @@
-// Torn War Call — State module
+// Torn War Call - State module
 // Single source of truth for the faction's war status. Every other module
 // reads state through here instead of re-deriving it from raw API data.
 
@@ -8,12 +8,12 @@ window.TWC.State = (function () {
   'use strict';
 
   const STATES = Object.freeze({
-    UNKNOWN: 'unknown',       // still syncing / not enough data yet — never guess past this
+    UNKNOWN: 'unknown',       // still syncing / not enough data yet - never guess past this
     PEACE: 'peace',           // no war scheduled
     WAR_PREP: 'war_prep',     // war scheduled, not started
     ACTIVE_WAR: 'active_war', // war ongoing
     WAR_ENDED: 'war_ended',   // war finished, within the post-war display window
-    FAILURE: 'failure',       // script-level failure — overrides everything else
+    FAILURE: 'failure',       // script-level failure - overrides everything else
   });
 
   let current = STATES.UNKNOWN;

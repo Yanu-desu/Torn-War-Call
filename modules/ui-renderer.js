@@ -1,4 +1,4 @@
-// Torn War Call — UI Renderer module
+// Torn War Call - UI Renderer module
 // Handles all presentation and DOM manipulation. Pure UI layer with no business logic.
 // Listens to State and other modules, renders when data changes.
 
@@ -20,32 +20,32 @@ window.TWC.UIRenderer = (function () {
     [STATE.STATES.UNKNOWN]: {
       text: 'Syncing...',
       color: '#95a5a6',
-      icon: '🔄',
+      icon: '[sync]',
     },
     [STATE.STATES.PEACE]: {
       text: 'At Peace',
       color: '#27ae60',
-      icon: '☮',
+      icon: '[peace]',
     },
     [STATE.STATES.WAR_PREP]: {
       text: 'War Scheduled',
       color: '#f39c12',
-      icon: '⚙',
+      icon: '[prep]',
     },
     [STATE.STATES.ACTIVE_WAR]: {
       text: 'War Active',
       color: '#e74c3c',
-      icon: '⚔',
+      icon: '[war]',
     },
     [STATE.STATES.WAR_ENDED]: {
       text: 'War Ended',
       color: '#3498db',
-      icon: '✓',
+      icon: '[ok]',
     },
     [STATE.STATES.FAILURE]: {
       text: 'Script Failure',
       color: '#c0392b',
-      icon: '✕',
+      icon: '[error]',
     },
   };
 
@@ -246,27 +246,27 @@ window.TWC.UIRenderer = (function () {
     panel.innerHTML = `
       <div id="twc-header">
         <h2>
-          <span id="twc-icon">📊</span>
+          <span id="twc-icon">[STATS]</span>
           Torn War Call
         </h2>
         <div id="twc-header-actions">
-          <button id="twc-toggle-btn" title="Toggle panel">▾</button>
+          <button id="twc-toggle-btn" title="Toggle panel">v</button>
         </div>
       </div>
 
       <div id="twc-status">
-        <span id="twc-status-icon">🔄</span>
+        <span id="twc-status-icon">[sync]</span>
         <span id="twc-status-text">Syncing...</span>
       </div>
 
       <div id="twc-body">
         <div id="twc-travel" class="hidden"></div>
         <div id="twc-enemy-section" class="twc-section">
-          <div class="twc-section-title">Enemy — Coming Out</div>
+          <div class="twc-section-title">Enemy - Coming Out</div>
           <div id="twc-enemy-list"></div>
         </div>
         <div id="twc-ally-section" class="twc-section">
-          <div class="twc-section-title">Ally — Almost Out</div>
+          <div class="twc-section-title">Ally - Almost Out</div>
           <div id="twc-ally-list"></div>
         </div>
       </div>
@@ -274,9 +274,9 @@ window.TWC.UIRenderer = (function () {
       <div id="twc-footer">
         <span id="twc-version">v${CONFIG.VERSION}</span>
         <div id="twc-footer-controls">
-          <button id="twc-debug-btn" title="Debug">🔧</button>
-          <button id="twc-settings-btn" title="Settings">⚙</button>
-          <button id="twc-hide-btn" title="Hide UI">✕</button>
+          <button id="twc-debug-btn" title="Debug">[tool]</button>
+          <button id="twc-settings-btn" title="Settings">[gear]</button>
+          <button id="twc-hide-btn" title="Hide UI">[x]</button>
         </div>
       </div>
     `;
@@ -318,7 +318,7 @@ window.TWC.UIRenderer = (function () {
     const isCollapsed = CONFIG.get('panelCollapsed');
     CONFIG.save('panelCollapsed', !isCollapsed);
     body.classList.toggle('hidden');
-    btn.textContent = isCollapsed ? '▾' : '▸';
+    btn.textContent = isCollapsed ? 'v' : '>';
   }
 
   function hidePanel() {

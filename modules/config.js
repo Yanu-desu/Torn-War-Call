@@ -1,4 +1,4 @@
-// Torn War Call — Config module
+// Torn War Call - Config module
 // Centralized configuration with validation and persistence.
 // Provides defaults, loads from GM storage, and validates required fields.
 

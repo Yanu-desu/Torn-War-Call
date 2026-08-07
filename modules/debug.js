@@ -1,4 +1,4 @@
-// Torn War Call — Debug module
+// Torn War Call - Debug module
 // Structured logging with severity, source, and timestamp. Any module can log
 // here; the UI queries it for display instead of each module keeping its own log.
 

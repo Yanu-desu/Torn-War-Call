@@ -1,4 +1,4 @@
-﻿// ==UserScript==
+// ==UserScript==
 // @name         Torn War Call Panel
 // @namespace    torn-war-call
 // @version      2.0.0
@@ -14,8 +14,10 @@
 
 // CONSOLIDATED BUILD: All modules bundled for single-file deployment
 
-// ==================== state ====================
-// Torn War Call â€” State module
+
+// === MODULE: state ===
+
+// Torn War Call - State module
 // Single source of truth for the faction's war status. Every other module
 // reads state through here instead of re-deriving it from raw API data.
 
@@ -25,12 +27,12 @@ window.TWC.State = (function () {
   'use strict';
 
   const STATES = Object.freeze({
-    UNKNOWN: 'unknown',       // still syncing / not enough data yet â€” never guess past this
+    UNKNOWN: 'unknown',       // still syncing / not enough data yet - never guess past this
     PEACE: 'peace',           // no war scheduled
     WAR_PREP: 'war_prep',     // war scheduled, not started
     ACTIVE_WAR: 'active_war', // war ongoing
     WAR_ENDED: 'war_ended',   // war finished, within the post-war display window
-    FAILURE: 'failure',       // script-level failure â€” overrides everything else
+    FAILURE: 'failure',       // script-level failure - overrides everything else
   });
 
   let current = STATES.UNKNOWN;
@@ -76,9 +78,9 @@ window.TWC.State = (function () {
   return { STATES, set, get, subscribe };
 })();
 
+// === MODULE: debug ===
 
-// ==================== debug ====================
-// Torn War Call â€” Debug module
+// Torn War Call - Debug module
 // Structured logging with severity, source, and timestamp. Any module can log
 // here; the UI queries it for display instead of each module keeping its own log.
 
@@ -151,9 +153,9 @@ window.TWC.Debug = (function () {
   return { SEVERITY, SEVERITY_ORDER, log, query, clear, onLog };
 })();
 
+// === MODULE: history ===
 
-// ==================== history ====================
-// Torn War Call â€” History module
+// Torn War Call - History module
 // Tracks meaningful EVENTS (war detected, ping sent, settings changed...) as
 // opposed to Debug's granular technical logs. Different audience, different purpose:
 // this is "what happened", Debug is "what the code was doing".
@@ -192,11 +194,11 @@ window.TWC.History = (function () {
   return { record, all, onRecord };
 })();
 
+// === MODULE: travel ===
 
-// ==================== travel ====================
-// Torn War Call â€” Travel module
+// Torn War Call - Travel module
 // Tracks the KEY OWNER's own travel status. Torn's API only exposes a live
-// travel timer for the account the key belongs to â€” there is no way to see
+// travel timer for the account the key belongs to - there is no way to see
 // a faction member's travel countdown, so this is inherently personal, not
 // faction-wide like the hospital tracker.
 //
@@ -213,8 +215,8 @@ window.TWC.Travel = (function () {
     NONE: 'none',           // not traveling
     DEPARTED: 'departed',   // outbound, in the air
     ABROAD: 'abroad',       // landed at destination, no return timer exists yet
-    RETURNING: 'returning', // heading back to Torn â€” this is when "back in Torn" ETA becomes knowable
-    ARRIVED: 'arrived',     // back in Torn (transient â€” clears on next poll)
+    RETURNING: 'returning', // heading back to Torn - this is when "back in Torn" ETA becomes knowable
+    ARRIVED: 'arrived',     // back in Torn (transient - clears on next poll)
   });
 
   let current = { phase: PHASES.NONE };
@@ -256,7 +258,7 @@ window.TWC.Travel = (function () {
 
     if (changed) {
       if (Debug) {
-        Debug.log(Debug.SEVERITY.INFO, 'travel', `Travel phase: ${next.phase}${next.destination ? ' â†’ ' + next.destination : ''}`);
+        Debug.log(DEBUG.SEVERITY.INFO, 'Travel', `Travel phase: ${next.phase}${next.destination ? ' -> ' + next.destination : ''}`);
       }
       listeners.forEach((fn) => { 
         try { fn(current); } catch (e) { 
@@ -281,9 +283,9 @@ window.TWC.Travel = (function () {
   return { PHASES, update, get, onChange };
 })();
 
+// === MODULE: config ===
 
-// ==================== config ====================
-// Torn War Call â€” Config module
+// Torn War Call - Config module
 // Centralized configuration with validation and persistence.
 // Provides defaults, loads from GM storage, and validates required fields.
 
@@ -378,9 +380,9 @@ window.TWC.Config = (function () {
   };
 })();
 
+// === MODULE: api ===
 
-// ==================== api ====================
-// Torn War Call â€” API module
+// Torn War Call - API module
 // Centralized Torn API interaction layer. Handles requests with proper error handling
 // and the quirk that Torn returns HTTP 200 even on logical errors.
 
@@ -464,9 +466,9 @@ window.TWC.API = (function () {
   };
 })();
 
+// === MODULE: travel-display ===
 
-// ==================== travel-display ====================
-// Torn War Call â€” Travel Display module
+// Torn War Call - Travel Display module
 // Formats travel state for UI consumption. Transforms raw travel data into
 // human-readable ETAs and status messages. Integrates with Travel module.
 
@@ -567,9 +569,9 @@ window.TWC.TravelDisplay = (function () {
   return { getDisplay, formatDuration, formatTime };
 })();
 
+// === MODULE: war-detector ===
 
-// ==================== war-detector ====================
-// Torn War Call â€” War Detector module
+// Torn War Call - War Detector module
 // Polls faction war status and drives state transitions.
 // Tracks war lifecycle: Peace -> Prep -> Active -> Ended -> Peace
 
@@ -652,9 +654,9 @@ window.TWC.WarDetector = (function () {
   return { start, stop, poll };
 })();
 
+// === MODULE: hospital-tracker ===
 
-// ==================== hospital-tracker ====================
-// Torn War Call â€” Hospital Tracker module
+// Torn War Call - Hospital Tracker module
 // Polls faction rosters and tracks hospital status.
 // De-duplicates alerts per hospital stay; fires event when someone enters warn window.
 
@@ -759,9 +761,9 @@ window.TWC.HospitalTracker = (function () {
   return { start, stop, poll, onAlert, getMembers };
 })();
 
+// === MODULE: ui-renderer ===
 
-// ==================== ui-renderer ====================
-// Torn War Call â€” UI Renderer module
+// Torn War Call - UI Renderer module
 // Handles all presentation and DOM manipulation. Pure UI layer with no business logic.
 // Listens to State and other modules, renders when data changes.
 
@@ -783,32 +785,32 @@ window.TWC.UIRenderer = (function () {
     [STATE.STATES.UNKNOWN]: {
       text: 'Syncing...',
       color: '#95a5a6',
-      icon: 'ðŸ”„',
+      icon: '[sync]',
     },
     [STATE.STATES.PEACE]: {
       text: 'At Peace',
       color: '#27ae60',
-      icon: 'â˜®',
+      icon: '[peace]',
     },
     [STATE.STATES.WAR_PREP]: {
       text: 'War Scheduled',
       color: '#f39c12',
-      icon: 'âš™',
+      icon: '[prep]',
     },
     [STATE.STATES.ACTIVE_WAR]: {
       text: 'War Active',
       color: '#e74c3c',
-      icon: 'âš”',
+      icon: '[war]',
     },
     [STATE.STATES.WAR_ENDED]: {
       text: 'War Ended',
       color: '#3498db',
-      icon: 'âœ“',
+      icon: '[ok]',
     },
     [STATE.STATES.FAILURE]: {
       text: 'Script Failure',
       color: '#c0392b',
-      icon: 'âœ•',
+      icon: '[error]',
     },
   };
 
@@ -1009,27 +1011,27 @@ window.TWC.UIRenderer = (function () {
     panel.innerHTML = `
       <div id="twc-header">
         <h2>
-          <span id="twc-icon">ðŸ“Š</span>
+          <span id="twc-icon">[STATS]</span>
           Torn War Call
         </h2>
         <div id="twc-header-actions">
-          <button id="twc-toggle-btn" title="Toggle panel">â–¾</button>
+          <button id="twc-toggle-btn" title="Toggle panel">v</button>
         </div>
       </div>
 
       <div id="twc-status">
-        <span id="twc-status-icon">ðŸ”„</span>
+        <span id="twc-status-icon">[sync]</span>
         <span id="twc-status-text">Syncing...</span>
       </div>
 
       <div id="twc-body">
         <div id="twc-travel" class="hidden"></div>
         <div id="twc-enemy-section" class="twc-section">
-          <div class="twc-section-title">Enemy â€” Coming Out</div>
+          <div class="twc-section-title">Enemy - Coming Out</div>
           <div id="twc-enemy-list"></div>
         </div>
         <div id="twc-ally-section" class="twc-section">
-          <div class="twc-section-title">Ally â€” Almost Out</div>
+          <div class="twc-section-title">Ally - Almost Out</div>
           <div id="twc-ally-list"></div>
         </div>
       </div>
@@ -1037,9 +1039,9 @@ window.TWC.UIRenderer = (function () {
       <div id="twc-footer">
         <span id="twc-version">v${CONFIG.VERSION}</span>
         <div id="twc-footer-controls">
-          <button id="twc-debug-btn" title="Debug">ðŸ”§</button>
-          <button id="twc-settings-btn" title="Settings">âš™</button>
-          <button id="twc-hide-btn" title="Hide UI">âœ•</button>
+          <button id="twc-debug-btn" title="Debug">[tool]</button>
+          <button id="twc-settings-btn" title="Settings">[gear]</button>
+          <button id="twc-hide-btn" title="Hide UI">[x]</button>
         </div>
       </div>
     `;
@@ -1081,7 +1083,7 @@ window.TWC.UIRenderer = (function () {
     const isCollapsed = CONFIG.get('panelCollapsed');
     CONFIG.save('panelCollapsed', !isCollapsed);
     body.classList.toggle('hidden');
-    btn.textContent = isCollapsed ? 'â–¾' : 'â–¸';
+    btn.textContent = isCollapsed ? 'v' : '>';
   }
 
   function hidePanel() {
@@ -1228,8 +1230,7 @@ window.TWC.UIRenderer = (function () {
   };
 })();
 
-
-// ==================== MAIN INITIALIZATION ====================
+// === MAIN INITIALIZATION ===
 
 (function () {
   'use strict';
@@ -1259,7 +1260,7 @@ window.TWC.UIRenderer = (function () {
 
   async function initialize() {
     try {
-      DEBUG.log(DEBUG.SEVERITY.INFO, 'Main', `Initializing TWC v${CONFIG.VERSION}`);
+      DEBUG.log(DEBUG.SEVERITY.INFO, 'Main', 'Initializing TWC v' + CONFIG.VERSION);
 
       CONFIG.load();
       const configErrors = CONFIG.validate();
@@ -1273,7 +1274,7 @@ window.TWC.UIRenderer = (function () {
       }
 
       CONFIG.save('lastInitTime', Math.floor(Date.now() / 1000));
-      HISTORY.record('init', `Script initialized v${CONFIG.VERSION}`);
+      HISTORY.record('init', 'Script initialized v' + CONFIG.VERSION);
 
       UI.initialize();
 
@@ -1285,14 +1286,14 @@ window.TWC.UIRenderer = (function () {
           const travel = await API.getUserTravel(CONFIG.get('apiKey'));
           TRAVEL.update(travel, DEBUG);
         } catch (e) {
-          DEBUG.log(DEBUG.SEVERITY.WARNING, 'Main', `Travel update failed: ${e.message}`);
+          DEBUG.log(DEBUG.SEVERITY.WARNING, 'Main', 'Travel update failed: ' + e.message);
         }
       }, 15000);
 
       STATE.set(STATE.STATES.UNKNOWN, { waiting: 'first poll' });
 
       HOSPITAL.onAlert(({ side, member, secondsLeft }) => {
-        HISTORY.record('ping', `${side === 'ally' ? 'Ally' : 'Enemy'}: ${member.name} in ${secondsLeft}s`);
+        HISTORY.record('ping', (side === 'ally' ? 'Ally' : 'Enemy') + ': ' + member.name + ' in ' + secondsLeft + 's');
       });
 
       STATE.subscribe((state, context) => {
@@ -1303,7 +1304,7 @@ window.TWC.UIRenderer = (function () {
 
       DEBUG.log(DEBUG.SEVERITY.SUCCESS, 'Main', 'Initialization complete');
     } catch (e) {
-      DEBUG.log(DEBUG.SEVERITY.CRITICAL, 'Main', `Initialization failed: ${e.message}`);
+      DEBUG.log(DEBUG.SEVERITY.CRITICAL, 'Main', 'Initialization failed: ' + e.message);
       STATE.set(STATE.STATES.FAILURE, { reason: e.message });
     }
   }

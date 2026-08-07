@@ -1,4 +1,4 @@
-// Torn War Call — Module Loader
+// Torn War Call - Module Loader
 // Loads all TWC modules in dependency order. Include this via @require before the main userscript.
 // This ensures all modules are available when the main script runs.
 

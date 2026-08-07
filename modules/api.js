@@ -1,4 +1,4 @@
-// Torn War Call — API module
+// Torn War Call - API module
 // Centralized Torn API interaction layer. Handles requests with proper error handling
 // and the quirk that Torn returns HTTP 200 even on logical errors.
 

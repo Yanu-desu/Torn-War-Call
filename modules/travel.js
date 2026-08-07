@@ -1,6 +1,6 @@
-// Torn War Call — Travel module
+// Torn War Call - Travel module
 // Tracks the KEY OWNER's own travel status. Torn's API only exposes a live
-// travel timer for the account the key belongs to — there is no way to see
+// travel timer for the account the key belongs to - there is no way to see
 // a faction member's travel countdown, so this is inherently personal, not
 // faction-wide like the hospital tracker.
 //
@@ -17,8 +17,8 @@ window.TWC.Travel = (function () {
     NONE: 'none',           // not traveling
     DEPARTED: 'departed',   // outbound, in the air
     ABROAD: 'abroad',       // landed at destination, no return timer exists yet
-    RETURNING: 'returning', // heading back to Torn — this is when "back in Torn" ETA becomes knowable
-    ARRIVED: 'arrived',     // back in Torn (transient — clears on next poll)
+    RETURNING: 'returning', // heading back to Torn - this is when "back in Torn" ETA becomes knowable
+    ARRIVED: 'arrived',     // back in Torn (transient - clears on next poll)
   });
 
   let current = { phase: PHASES.NONE };
@@ -60,7 +60,7 @@ window.TWC.Travel = (function () {
 
     if (changed) {
       if (Debug) {
-        Debug.log(Debug.SEVERITY.INFO, 'travel', `Travel phase: ${next.phase}${next.destination ? ' → ' + next.destination : ''}`);
+        Debug.log(DEBUG.SEVERITY.INFO, 'Travel', `Travel phase: ${next.phase}${next.destination ? ' -> ' + next.destination : ''}`);
       }
       listeners.forEach((fn) => { 
         try { fn(current); } catch (e) { 

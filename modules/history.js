@@ -1,4 +1,4 @@
-// Torn War Call — History module
+// Torn War Call - History module
 // Tracks meaningful EVENTS (war detected, ping sent, settings changed...) as
 // opposed to Debug's granular technical logs. Different audience, different purpose:
 // this is "what happened", Debug is "what the code was doing".

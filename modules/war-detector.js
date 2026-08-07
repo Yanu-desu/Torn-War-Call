@@ -1,4 +1,4 @@
-// Torn War Call — War Detector module
+// Torn War Call - War Detector module
 // Polls faction war status and drives state transitions.
 // Tracks war lifecycle: Peace -> Prep -> Active -> Ended -> Peace
 
