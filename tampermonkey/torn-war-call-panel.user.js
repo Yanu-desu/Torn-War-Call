@@ -1,9 +1,10 @@
 // ==UserScript==
 // @name         Torn War Call
 // @namespace    https://github.com/Yanu-desu/Torn-War-Call
-// @version      3.3.1
+// @version      4.0.1
 // @description  Read-only Torn faction war hospital intel panel with Discord alerts, centralized state machine.
 // @author       Yanu [3028844]
+// @license      MIT
 // @match        https://www.torn.com/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_registerMenuCommand
@@ -50,11 +51,11 @@
     // MODULE: BuildInfo
     // =========================================================================
     const BuildInfo = {
-        version: '3.3.1',
-        build: 15,
+        version: '4.0.1',
+        build: 20,
         releaseDate: '2026-08-08',
         initTime: new Date(),
-        phase: 'Phase 3 fix — real debug panel, traveling/abroad section, travel diagnostics'
+        phase: 'Phase 4 fix — exponential backoff on API rate limiting'
     };
 
     // =========================================================================
@@ -66,10 +67,47 @@
         UI_PREFS: 'twc-ui-prefs'
     };
 
+    // =========================================================================
+    // ⚙ CUSTOMIZE ME — everything you're likely to want to tweak lives here.
+    // Nothing below this block should need touching for normal customization.
+    // =========================================================================
+    //
+    //   POLL_INTERVAL_MS      How often (ms) the script checks Torn for war/
+    //                         hospital/travel updates. Lower = faster alerts,
+    //                         more API calls. 15000 (15s) is a safe default —
+    //                         don't go below ~5000 without a reason.
+    //
+    //   WARNING_SECONDS       How many seconds before hospital release turns
+    //                         a player row red in the panel (visual only).
+    //                         Ping firing thresholds are now per-slot,
+    //                         configured in the Ping Config (🔔) panel —
+    //                         this constant no longer controls alerting.
+    //
+    //   WAR_ENDED_DISPLAY_MS  How long the "War Ended" status (with win/loss
+    //                         message) stays shown after a war actually ends,
+    //                         before the panel reverts to "At Peace".
+    //
+    //   PANEL_MIN/MAX_WIDTH,
+    //   PANEL_MIN/MAX_HEIGHT  Resize bounds for the panel. Numbers are in
+    //                         pixels. Widening these lets the user drag the
+    //                         panel bigger/smaller than the defaults.
+    //
+    //   STATUS_DISPLAY        (further down, in the UI module) — the label
+    //                         and color shown for each war state. Edit the
+    //                         `label` strings here to change the wording
+    //                         without touching any logic.
+    //
+    //   SEVERITY              (Debug module, below) — the label + color used
+    //                         for each log severity level in the debug panel.
+    //
+    // API key, Faction IDs, and Discord webhook are NOT hardcoded here —
+    // they're entered by the user through the in-panel Settings (⚙) modal
+    // and persisted to localStorage under CONFIG_KEYS.USER_CONFIG.
+    // =========================================================================
     const POLL_INTERVAL_MS = 15000;
     const WARNING_SECONDS = 60;
     const WAR_ENDED_DISPLAY_MS = 2 * 24 * 60 * 60 * 1000; // 2 days
-    const PAGE_CHECK_INTERVAL_MS = 4000;
+    const PAGE_CHECK_INTERVAL_MS = 4000; // how often to re-check "am I on a faction page" — not usually worth tuning
 
     const PANEL_MIN_WIDTH = 320;
     const PANEL_MAX_WIDTH = 700;
@@ -168,6 +206,9 @@
     // =========================================================================
     // MODULE: Debug
     // =========================================================================
+    // ⚙ CUSTOMIZE: edit `label` for the text shown in the debug panel, or
+    // `color` (hex) for its severity tint. `level` controls sort order only —
+    // leave it alone unless you're adding a new severity tier.
     const SEVERITY = {
         info: { level: 0, label: 'Info', color: '#7fb3ff' },
         success: { level: 1, label: 'Success', color: '#39ff8a' },
@@ -415,12 +456,6 @@
         // Returns null when not traveling, otherwise { phase, destination, arrival }.
         // phase is 'outbound' (heading to destination) or 'returning' (heading home).
         derive(response) {
-            // Logged every poll at 'info' level so the debug panel shows exactly
-            // what Torn's API sent — this is how we confirm/fix field names
-            // instead of guessing blind, same approach that found the v1/v2
-            // faction mismatch earlier.
-            Debug.log('info', 'Travel', `raw response: ${JSON.stringify(response)}`);
-
             const travel = response?.travel || {};
             const status = response?.status || response?.basic?.status || {};
 
@@ -430,8 +465,13 @@
 
             if (!isTraveling || !destination) return null;
 
+            // Confirmed via live API response (2026-08-08): Torn sets
+            // travel.destination to "Torn" itself on the return leg — that's
+            // the reliable signal. Description-text matching kept only as a
+            // fallback in case that ever changes.
             const description = String(status.description || '').toLowerCase();
-            const phase = description.includes('return') ? 'returning' : 'outbound';
+            const isReturning = destination.toLowerCase() === 'torn' || description.includes('return');
+            const phase = isReturning ? 'returning' : 'outbound';
             const arrival = Number(travel.timestamp || travel.time_left_end || status.until || 0);
 
             return { phase, destination, arrival };
@@ -439,6 +479,10 @@
     };
 
     let travelState = { active: false, phase: null, destination: '', arrival: 0 };
+    // Torn sets travel.destination to "Torn" itself during the return leg —
+    // this remembers the real origin country so the label can still read
+    // "Hawaii -> Torn" instead of the nonsensical "Torn -> Torn".
+    let lastKnownDestination = '';
 
     function updateTravelState(info) {
         if (!info) {
@@ -448,73 +492,228 @@
                 History.add({ type: arrivedHome ? 'arrived_home' : 'arrived_abroad', destination: travelState.destination });
             }
             travelState = { active: false, phase: null, destination: '', arrival: 0 };
+            lastKnownDestination = '';
             return;
         }
 
-        const changed = travelState.phase !== info.phase || travelState.destination !== info.destination;
+        if (info.phase === 'outbound') {
+            lastKnownDestination = info.destination;
+        }
+        const displayDestination = info.phase === 'returning' ? (lastKnownDestination || info.destination) : info.destination;
+
+        const changed = travelState.phase !== info.phase || travelState.destination !== displayDestination;
         if (changed) {
             Debug.log(
                 'info', 'Travel',
                 info.phase === 'outbound'
-                    ? `Travel started: Torn -> ${info.destination}`
-                    : `Return travel started: ${info.destination} -> Torn`
+                    ? `Travel started: Torn -> ${displayDestination}`
+                    : `Return travel started: ${displayDestination} -> Torn`
             );
             History.add({
                 type: info.phase === 'outbound' ? 'travel_started' : 'return_started',
-                destination: info.destination
+                destination: displayDestination
             });
         }
 
-        travelState = { active: true, phase: info.phase, destination: info.destination, arrival: info.arrival };
+        travelState = { active: true, phase: info.phase, destination: displayDestination, arrival: info.arrival };
     }
 
     // =========================================================================
-    // MODULE: HospitalAlerts
+    // MODULE: Formatting utilities
     // =========================================================================
-    const alertedHospitals = new Set();
 
-    function hospitalKey(player) { return `${player.id}:${player.until}`; }
-
-    function shouldAlert(player, now) {
-        if (!player.until) return false;
-        const secondsLeft = player.until - now;
-        if (secondsLeft <= 0 || secondsLeft > WARNING_SECONDS) return false;
-        const key = hospitalKey(player);
-        if (alertedHospitals.has(key)) return false;
-        alertedHospitals.add(key);
-        return true;
-    }
-
+    // Formats a duration for display — never a wall-clock time, always
+    // relative (per the explicit "no timestamps" instruction from Phase 3).
+    // Shows hr/min/sec, omitting leading zero units (a 45-second countdown
+    // shows "45sec", not "0hr 0min 45sec"), and pluralizes each unit only
+    // when its value is greater than 1 (1sec, 2secs, 1min, 5mins, 1hr, 3hrs).
     function formatTime(seconds) {
         seconds = Math.max(0, Math.floor(seconds));
-        const minutes = Math.floor(seconds / 60);
+
+        const hrs = Math.floor(seconds / 3600);
+        const mins = Math.floor((seconds % 3600) / 60);
         const secs = seconds % 60;
-        return minutes > 0 ? `${minutes}m ${String(secs).padStart(2, '0')}s` : `${secs}s`;
+
+        const unit = (value, label) => `${value}${label}${value > 1 ? 's' : ''}`;
+
+        const parts = [];
+        if (hrs > 0) parts.push(unit(hrs, 'hr'));
+        if (hrs > 0 || mins > 0) parts.push(unit(mins, 'min'));
+        parts.push(unit(secs, 'sec'));
+
+        return parts.join(' ');
     }
 
     function getPlayerUrl(id) {
         return `https://www.torn.com/profiles.php?XID=${encodeURIComponent(id)}`;
     }
 
-    async function fireHospitalAlert(player, kind) {
-        const secondsLeft = Math.max(0, player.until - Math.floor(Date.now() / 1000));
-        History.add({ type: kind, id: player.id, name: player.name, until: player.until });
+    // =========================================================================
+    // MODULE: PingSystem (Phase 4)
+    // Up to 3 configurable ping "slots" — each with its own countdown
+    // threshold, custom message template, and enable/disable toggle.
+    // Replaces the old single hardcoded 60-second alert from Phases 1-3.
+    //
+    // Delivery is dual-channel: Discord webhook (if configured) AND an
+    // in-panel toast + audio beep, so a ping isn't silently missed if
+    // Discord is misconfigured or the person is looking at the panel
+    // rather than Discord at the moment it fires.
+    //
+    // Activation is gated to the state machine, not user-configurable —
+    // pings only fire during PREP or ACTIVE_WAR and stop the instant the
+    // war ends or peace resumes, per spec.
+    // =========================================================================
 
+    // ⚙ CUSTOMIZE: these are the factory defaults shown the first time
+    // someone opens Ping Config — editing them only changes what a *new*
+    // install starts with, not anyone's already-saved slots.
+    function getDefaultPingSlots() {
+        return [
+            { id: 1, enabled: true, thresholdSeconds: 60, message: '{name} is leaving hospital in {time}!' },
+            { id: 2, enabled: false, thresholdSeconds: 30, message: '{name} — {time} left!' },
+            { id: 3, enabled: false, thresholdSeconds: 10, message: 'FINAL WARNING: {name} — {time}!' }
+        ];
+    }
+
+    function ensurePingSlots() {
+        const defaults = getDefaultPingSlots();
+        if (!Array.isArray(userConfig.pingSlots)) {
+            userConfig.pingSlots = defaults;
+        } else {
+            // Backfill any missing slot and hard-cap at 3, regardless of
+            // what an older or malformed saved config contains.
+            userConfig.pingSlots = defaults
+                .map((def, i) => ({ ...def, ...(userConfig.pingSlots[i] || {}) }))
+                .slice(0, 3);
+        }
+        return userConfig.pingSlots;
+    }
+
+    const firedPings = new Set(); // dedup key: `${slotId}:${playerId}:${until}`
+    const lastFired = {}; // slotId -> { at: ms, playerName }
+
+    function isPingSystemActive() {
+        const s = StateMachine.getState();
+        return s === StateMachine.STATES.PREP || s === StateMachine.STATES.ACTIVE_WAR;
+    }
+
+    function fillTemplate(template, { name, time, level, side }) {
+        return String(template || '{name} — {time}')
+            .replace(/\{name\}/g, name)
+            .replace(/\{time\}/g, time)
+            .replace(/\{level\}/g, String(level ?? '?'))
+            .replace(/\{side\}/g, side);
+    }
+
+    // Short square-wave beep via Web Audio — no external asset file needed,
+    // and it works even if the tab has no other audio permissions granted.
+    function playBeep() {
+        try {
+            const AudioCtx = window.AudioContext || window.webkitAudioContext;
+            if (!AudioCtx) return;
+            const ctx = new AudioCtx();
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.type = 'square';
+            osc.frequency.value = 880;
+            gain.gain.value = 0.08;
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            osc.start();
+            setTimeout(() => { osc.stop(); ctx.close(); }, 180);
+        } catch (err) {
+            Debug.log('warn', 'PingSystem', `Beep playback failed: ${err.message}`);
+        }
+    }
+
+    // Toasts render in their own fixed container, independent of the main
+    // panel — they show even if the panel is collapsed or hidden, since a
+    // ping firing is exactly the situation where you're NOT looking at it.
+    function showToast(text) {
+        let container = document.getElementById('twc-toast-container');
+        if (!container) {
+            container = document.createElement('div');
+            container.id = 'twc-toast-container';
+            document.body.appendChild(container);
+        }
+        const toast = document.createElement('div');
+        toast.className = 'twc-toast';
+        toast.textContent = text;
+        container.appendChild(toast);
+        setTimeout(() => toast.classList.add('twc-toast-out'), 5000);
+        setTimeout(() => toast.remove(), 5600);
+    }
+
+    async function firePing(slot, player, side, secondsLeft) {
+        const key = `${slot.id}:${player.id}:${player.until}`;
+        if (firedPings.has(key)) return;
+        firedPings.add(key);
+
+        const time = formatTime(secondsLeft);
+        const message = fillTemplate(slot.message, { name: player.name, time, level: player.level, side });
+
+        lastFired[slot.id] = { at: Date.now(), playerName: player.name };
+
+        // In-panel delivery always attempted first — it has no dependency
+        // on Discord being configured correctly.
+        showToast(`[Slot ${slot.id}] ${message}`);
+        playBeep();
+
+        History.add({ type: 'ping_sent', slot: slot.id, side, id: player.id, name: player.name, until: player.until });
+        Debug.log('success', 'PingSystem', `Slot ${slot.id} fired for ${side} ${player.name}: ${message}`);
+
+        // Discord delivery is best-effort — failure here must not undo the
+        // in-panel delivery that already happened above.
         try {
             await Discord.send({
                 embeds: [{
-                    title: kind === 'enemy' ? 'Enemy hospital release' : 'Ally hospital release',
-                    description: `**${player.name}** is leaving hospital in **${formatTime(secondsLeft)}**.`,
+                    title: side === 'enemy' ? 'Enemy hospital release' : 'Ally hospital release',
+                    description: message,
                     fields: [
                         { name: 'Player', value: `[${player.name}](${getPlayerUrl(player.id)})`, inline: true },
-                        { name: 'Level', value: String(player.level || 'Unknown'), inline: true }
+                        { name: 'Level', value: String(player.level || 'Unknown'), inline: true },
+                        { name: 'Slot', value: String(slot.id), inline: true }
                     ],
                     timestamp: new Date().toISOString()
                 }]
             });
-            Debug.log('success', 'HospitalAlerts', `Sent ${kind} alert for ${player.name}`);
         } catch (error) {
-            Debug.log('error', 'HospitalAlerts', `Failed to send ${kind} alert for ${player.name}: ${error.message}`);
+            Debug.log('error', 'PingSystem', `Discord delivery failed for slot ${slot.id}: ${error.message}`);
+        }
+    }
+
+    function evaluatePings(players, side) {
+        if (!isPingSystemActive()) return;
+        const enabledSlots = ensurePingSlots().filter((s) => s.enabled);
+        if (!enabledSlots.length) return;
+
+        const now = Math.floor(Date.now() / 1000);
+        for (const player of players) {
+            if (!player.until) continue;
+            const secondsLeft = player.until - now;
+            if (secondsLeft <= 0) continue;
+
+            for (const slot of enabledSlots) {
+                if (secondsLeft <= slot.thresholdSeconds) {
+                    firePing(slot, player, side, secondsLeft);
+                }
+            }
+        }
+    }
+
+    // Drops dedup entries for hospital stays that are no longer current
+    // (player left hospital, or their `until` changed), so this Set doesn't
+    // grow unbounded across a long session. Called once per poll.
+    function pruneFiredPings(currentPlayers) {
+        const validKeys = new Set();
+        const slots = ensurePingSlots();
+        for (const p of currentPlayers) {
+            for (const slot of slots) {
+                validKeys.add(`${slot.id}:${p.id}:${p.until}`);
+            }
+        }
+        for (const key of firedPings) {
+            if (!validKeys.has(key)) firedPings.delete(key);
         }
     }
 
@@ -527,7 +726,8 @@
         collapse: `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>`,
         expand: `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 6 9 12 15 18"/></svg>`,
         eyeOff: `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.9 17.9A10.6 10.6 0 0 1 12 20c-7 0-10-8-10-8a18.4 18.4 0 0 1 4.2-5.2M9.9 4.2A10.6 10.6 0 0 1 12 4c7 0 10 8 10 8a18.4 18.4 0 0 1-2.2 3.3M14.1 14.1a3 3 0 1 1-4.2-4.2"/><line x1="2" y1="2" x2="22" y2="22"/></svg>`,
-        eye: `<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`
+        eye: `<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`,
+        bell: `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>`
     };
 
     // =========================================================================
@@ -568,6 +768,9 @@
     // =========================================================================
     const data = { ally: [], enemy: [], lastError: '', lastUpdate: 0 };
 
+    // ⚙ CUSTOMIZE: this is the wording/color shown in the status header for
+    // each war state. Safe to edit freely — these are display-only, changing
+    // them does not affect which state the script thinks it's in.
     const STATUS_DISPLAY = {
         unknown: { label: 'Syncing…', color: '#999' },
         peace: { label: 'At Peace', color: '#7fb3ff' },
@@ -594,6 +797,51 @@
         panelEl.style.right = `${uiPrefs.right}px`;
         panelEl.style.width = `${uiPrefs.width}px`;
         if (uiPrefs.height) panelEl.style.height = `${uiPrefs.height}px`;
+        clampPanelGeometry();
+    }
+
+    // Keeps the panel fully on-screen — specifically keeps the bottom-right
+    // resize handle and the header drag bar reachable — regardless of drag,
+    // resize, or the browser window itself shrinking after a size was saved.
+    // Runs after every geometry change, not just once at load, since any of
+    // those can independently push the panel off-screen.
+    const VIEWPORT_MARGIN = 8;
+
+    function clampPanelGeometry() {
+        if (!panelEl) return;
+
+        const vw = window.innerWidth;
+        const vh = window.innerHeight;
+
+        const maxW = Math.max(PANEL_MIN_WIDTH, vw - VIEWPORT_MARGIN * 2);
+        const maxH = Math.max(PANEL_MIN_HEIGHT, vh - VIEWPORT_MARGIN * 2);
+
+        let width = Math.min(Math.max(uiPrefs.width, PANEL_MIN_WIDTH), Math.min(PANEL_MAX_WIDTH, maxW));
+        let height = uiPrefs.height
+            ? Math.min(Math.max(uiPrefs.height, PANEL_MIN_HEIGHT), Math.min(PANEL_MAX_HEIGHT, maxH))
+            : null;
+
+        // Figure out current left from whichever positioning mode is active
+        // (right-anchored by default, left-anchored once the user has dragged it).
+        const currentLeft = panelEl.style.left
+            ? parseFloat(panelEl.style.left)
+            : vw - uiPrefs.right - width;
+
+        const left = Math.min(Math.max(currentLeft, VIEWPORT_MARGIN), Math.max(VIEWPORT_MARGIN, vw - width - VIEWPORT_MARGIN));
+        const top = Math.min(Math.max(uiPrefs.top, VIEWPORT_MARGIN), Math.max(VIEWPORT_MARGIN, vh - (height || PANEL_MIN_HEIGHT) - VIEWPORT_MARGIN));
+
+        uiPrefs.width = width;
+        if (height) uiPrefs.height = height;
+        uiPrefs.top = top;
+        uiPrefs.right = vw - (left + width);
+
+        panelEl.style.left = `${left}px`;
+        panelEl.style.right = 'auto';
+        panelEl.style.top = `${top}px`;
+        panelEl.style.width = `${width}px`;
+        if (height) panelEl.style.height = `${height}px`;
+
+        saveUiPrefs();
     }
 
     function applyVisibilityToDom() {
@@ -746,6 +994,20 @@
                 text-shadow: 0 0 6px rgba(57,255,138,.7); font-size: 12px; flex: 0 0 auto; }
             #twc-debug-close { cursor: pointer; opacity: .7; color: #39ff8a; }
             #twc-debug-close:hover { opacity: 1; text-shadow: 0 0 6px #39ff8a; }
+            #twc-debug-state { padding: 8px 12px; border-bottom: 1px solid rgba(57,255,138,.2); line-height: 1.7; flex: 0 0 auto; }
+            #twc-debug-state .twc-ok { color: #39ff8a; }
+            #twc-debug-state .twc-bad { color: #ff2ec4; }
+            #twc-debug-actions { display: flex; gap: 6px; padding: 8px 12px; border-bottom: 1px solid rgba(57,255,138,.2); flex: 0 0 auto; }
+            #twc-debug-actions button { flex: 1; padding: 6px; cursor: pointer;
+                background: rgba(57,255,138,.08); color: #39ff8a; border: 1px solid #39ff8a; border-radius: 3px;
+                font-family: inherit; font-size: 10px; letter-spacing: .5px; text-transform: uppercase; }
+            #twc-debug-actions button:hover { background: rgba(57,255,138,.18); box-shadow: 0 0 8px rgba(57,255,138,.4); }
+            #twc-debug-filters { display: flex; gap: 4px; padding: 6px 12px; flex: 0 0 auto; flex-wrap: wrap; }
+            .twc-debug-filter-btn { padding: 3px 8px; cursor: pointer; background: transparent; color: #6c8a99;
+                border: 1px solid rgba(108,138,153,.4); border-radius: 10px; font-family: inherit; font-size: 9px;
+                text-transform: uppercase; letter-spacing: .5px; }
+            .twc-debug-filter-btn.active { background: rgba(0,234,255,.15); color: #00eaff; border-color: #00eaff; }
+            .twc-debug-filter-btn:hover { border-color: #00eaff; }
             #twc-debug-body { padding: 8px 10px; overflow-y: auto; flex: 1 1 auto; min-height: 0; }
             .twc-log-line { padding: 4px 2px; border-bottom: 1px solid rgba(255,255,255,.05); display: flex; gap: 6px; flex-wrap: wrap; }
             .twc-log-time { color: #4a5c66; }
@@ -757,6 +1019,51 @@
             .twc-log-warn .twc-log-sev { background: rgba(255,209,102,.15); color: #ffd166; }
             .twc-log-error .twc-log-sev { background: rgba(255,92,92,.15); color: #ff5c5c; }
             .twc-log-critical .twc-log-sev { background: rgba(255,46,196,.2); color: #ff2ec4; }
+
+            /* Toasts — deliberately outside the panel entirely, so a ping
+               is visible even if the panel is collapsed or hidden. */
+            #twc-toast-container { position: fixed; bottom: 20px; right: 20px; z-index: 1000000;
+                display: flex; flex-direction: column; gap: 8px; align-items: flex-end; }
+            .twc-toast { background: linear-gradient(180deg, #0b0e14 0%, #0a0c10 100%);
+                border: 1px solid #ff2ec4; border-radius: 6px; padding: 10px 14px; max-width: 320px;
+                color: #baf9ff; font-family: 'Consolas','Courier New',monospace; font-size: 12px;
+                box-shadow: 0 0 14px rgba(255,46,196,.5); opacity: 1; transition: opacity .6s ease; }
+            .twc-toast.twc-toast-out { opacity: 0; }
+
+            #twc-ping-modal { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+                width: 340px; max-height: 75vh; display: none; flex-direction: column;
+                z-index: 999999; color: #baf9ff;
+                background: linear-gradient(180deg, #0b0e14 0%, #0a0c10 100%);
+                border: 1px solid #ffd166; border-radius: 6px;
+                box-shadow: 0 0 14px rgba(255,209,102,.4), 0 0 40px rgba(0,234,255,.1);
+                font-family: 'Consolas','Courier New',monospace; font-size: 12px; }
+            #twc-ping-modal.open { display: flex; }
+            #twc-ping-header { display: flex; justify-content: space-between; align-items: center;
+                padding: 10px 12px; border-bottom: 1px solid rgba(255,209,102,.3); background: rgba(255,209,102,.05);
+                font-weight: bold; letter-spacing: 1px; text-transform: uppercase; color: #ffd166;
+                text-shadow: 0 0 6px rgba(255,209,102,.7); font-size: 12px; flex: 0 0 auto; }
+            #twc-ping-close { cursor: pointer; opacity: .7; color: #ffd166; }
+            #twc-ping-close:hover { opacity: 1; text-shadow: 0 0 6px #ffd166; }
+            #twc-ping-body { padding: 10px 12px; overflow-y: auto; flex: 1 1 auto; min-height: 0; }
+            .twc-ping-hint { font-size: 10px; color: #6c8a99; margin-bottom: 10px; line-height: 1.5; }
+            .twc-ping-slot { border: 1px solid rgba(255,209,102,.25); border-radius: 4px; padding: 8px; margin-bottom: 10px; }
+            .twc-ping-slot-active { border-color: #ffd166; background: rgba(255,209,102,.04); }
+            .twc-ping-slot-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+            .twc-ping-toggle { display: flex; align-items: center; gap: 6px; font-weight: bold; font-size: 11px; }
+            .twc-ping-status { font-size: 9px; letter-spacing: .5px; color: #6c8a99; }
+            .twc-ping-slot-active .twc-ping-status { color: #ffd166; }
+            .twc-ping-meta { font-size: 10px; color: #6c8a99; margin-top: 4px; }
+            .twc-ping-slot input[type=text] { width: 100%; box-sizing: border-box; background: #05070a; color: #baf9ff;
+                border: 1px solid rgba(0,234,255,.4); border-radius: 3px; padding: 5px 6px; font-family: inherit; font-size: 11px; }
+            .twc-ping-slot input[type=text]:focus { outline: none; border-color: #ffd166; }
+            .twc-ping-test { width: 100%; margin-top: 6px; padding: 5px; cursor: pointer;
+                background: rgba(255,209,102,.08); color: #ffd166; border: 1px solid #ffd166; border-radius: 3px;
+                font-family: inherit; font-size: 9px; letter-spacing: .5px; text-transform: uppercase; }
+            .twc-ping-test:hover { background: rgba(255,209,102,.18); }
+            #twc-ping-save { width: 100%; margin-top: 4px; padding: 7px; cursor: pointer;
+                background: rgba(0,234,255,.08); color: #00eaff; border: 1px solid #00eaff; border-radius: 3px;
+                font-family: inherit; font-size: 11px; letter-spacing: 1px; text-transform: uppercase; }
+            #twc-ping-save:hover { background: rgba(0,234,255,.18); box-shadow: 0 0 10px rgba(0,234,255,.4); }
         `;
         document.head.appendChild(style);
     }
@@ -773,6 +1080,7 @@
                 <div class="twc-title-row"><span>Torn War Call</span></div>
                 <div class="twc-title-row">
                     <span class="twc-icon" id="twc-settings-btn" title="Settings">${Icons.gear}</span>
+                    <span class="twc-icon" id="twc-ping-config-btn" title="Ping Config">${Icons.bell}</span>
                     <span class="twc-icon" id="twc-debug-btn" title="Debug">${Icons.wrench}</span>
                     <span class="twc-icon" id="twc-collapse-btn" title="Collapse">${Icons.collapse}</span>
                     <span class="twc-icon" id="twc-hide-btn" title="Hide">${Icons.eyeOff}</span>
@@ -843,6 +1151,101 @@
         `;
         document.body.appendChild(settingsModal);
 
+        const pingModal = document.createElement('div');
+        pingModal.id = 'twc-ping-modal';
+        pingModal.innerHTML = `
+            <div id="twc-ping-header">
+                <span>Ping Config</span>
+                <span id="twc-ping-close">✕</span>
+            </div>
+            <div id="twc-ping-body">
+                <div class="twc-ping-hint">
+                    Up to 3 slots. Each fires independently once its countdown threshold is
+                    crossed. Placeholders: {name} {time} {level} {side}.
+                    Pings only fire during War Preparation or Active War.
+                </div>
+                <div id="twc-ping-slots"></div>
+                <button id="twc-ping-save">Save</button>
+            </div>
+        `;
+        document.body.appendChild(pingModal);
+
+        function renderPingSlotEditor() {
+            const container = document.getElementById('twc-ping-slots');
+            if (!container) return;
+            const slots = ensurePingSlots();
+
+            container.innerHTML = slots
+                .map((slot) => {
+                    const fired = lastFired[slot.id];
+                    const firedText = fired ? `Last fired: ${fired.playerName}, ${Math.round((Date.now() - fired.at) / 1000)}s ago` : 'Not fired yet this session';
+                    return `
+                        <div class="twc-ping-slot ${slot.enabled ? 'twc-ping-slot-active' : ''}">
+                            <div class="twc-ping-slot-row">
+                                <label class="twc-ping-toggle">
+                                    <input type="checkbox" class="twc-ping-enabled" data-slot="${slot.id}" ${slot.enabled ? 'checked' : ''}>
+                                    Slot ${slot.id}
+                                </label>
+                                <span class="twc-ping-status">${slot.enabled ? 'ACTIVE' : 'off'}</span>
+                            </div>
+                            <div class="twc-field-label">Fire when this many seconds remain</div>
+                            <input type="text" inputmode="numeric" class="twc-ping-threshold" data-slot="${slot.id}" value="${slot.thresholdSeconds}">
+                            <div class="twc-field-label">Message</div>
+                            <input type="text" class="twc-ping-message" data-slot="${slot.id}" value="${escapeHtml(slot.message)}">
+                            <div class="twc-ping-meta">${firedText}</div>
+                            <button class="twc-ping-test" data-slot="${slot.id}">Test Slot ${slot.id}</button>
+                        </div>
+                    `;
+                })
+                .join('');
+
+            container.querySelectorAll('.twc-ping-test').forEach((btn) => {
+                btn.addEventListener('click', () => {
+                    const slotId = Number(btn.dataset.slot);
+                    const slot = ensurePingSlots().find((s) => s.id === slotId);
+                    if (!slot) return;
+                    // Bypass dedup entirely for a manual test — fake player, fake `until`.
+                    const fakePlayer = { id: 0, name: 'Test Player', level: 1, until: Math.floor(Date.now() / 1000) + slot.thresholdSeconds };
+                    firedPings.delete(`${slot.id}:0:${fakePlayer.until}`);
+                    firePing(slot, fakePlayer, 'enemy', slot.thresholdSeconds);
+                });
+            });
+        }
+
+        function openPingConfig() {
+            renderPingSlotEditor();
+            pingModal.classList.add('open');
+            backdrop.classList.add('open');
+        }
+        function closePingConfig() {
+            pingModal.classList.remove('open');
+            backdrop.classList.remove('open');
+        }
+
+        document.getElementById('twc-ping-config-btn').addEventListener('click', openPingConfig);
+        document.getElementById('twc-ping-close').addEventListener('click', closePingConfig);
+
+        document.getElementById('twc-ping-save').addEventListener('click', () => {
+            const slots = ensurePingSlots();
+            document.querySelectorAll('.twc-ping-enabled').forEach((el) => {
+                const slot = slots.find((s) => s.id === Number(el.dataset.slot));
+                if (slot) slot.enabled = el.checked;
+            });
+            document.querySelectorAll('.twc-ping-threshold').forEach((el) => {
+                const slot = slots.find((s) => s.id === Number(el.dataset.slot));
+                if (slot) slot.thresholdSeconds = Math.max(1, Number(el.value) || slot.thresholdSeconds);
+            });
+            document.querySelectorAll('.twc-ping-message').forEach((el) => {
+                const slot = slots.find((s) => s.id === Number(el.dataset.slot));
+                if (slot) slot.message = el.value.trim() || slot.message;
+            });
+            userConfig.pingSlots = slots;
+            ConfigStore.save(userConfig);
+            Debug.log('info', 'PingSystem', 'Ping slot configuration saved.');
+            renderPingSlotEditor();
+            closePingConfig();
+        });
+
         const debugModal = document.createElement('div');
         debugModal.id = 'twc-debug-modal';
         debugModal.innerHTML = `
@@ -850,11 +1253,53 @@
                 <span>Debug Log</span>
                 <span id="twc-debug-close">✕</span>
             </div>
+            <div id="twc-debug-state"></div>
+            <div id="twc-debug-actions">
+                <button id="twc-debug-poll">Force Poll Now</button>
+                <button id="twc-debug-test">Send Test Alert</button>
+                <button id="twc-debug-clear">Clear Log</button>
+            </div>
+            <div id="twc-debug-filters"></div>
             <div id="twc-debug-body"></div>
         `;
         document.body.appendChild(debugModal);
 
+        let debugFilter = null;
+
+        function renderDebugState() {
+            const el = document.getElementById('twc-debug-state');
+            if (!el) return;
+            const yn = (b) => (b ? '<span class="twc-ok">yes</span>' : '<span class="twc-bad">no</span>');
+            const present = (v) => (v ? `<span class="twc-ok">set (${v.length} chars)</span>` : '<span class="twc-bad">EMPTY</span>');
+            el.innerHTML = `
+                state: <b>${StateMachine.getState()}</b><br>
+                apiKey: ${present(userConfig.apiKey)}<br>
+                ownFactionId: ${userConfig.ownFactionId || '<span class="twc-bad">EMPTY</span>'}<br>
+                enemyFactionId (pinned): ${userConfig.enemyFactionId || '<span style="opacity:.5">auto-detect</span>'}<br>
+                discordWebhook: ${present(userConfig.discordWebhook)}<br>
+                traveling: ${yn(travelState.active)}${travelState.active ? ` (${travelState.phase}, ${travelState.destination})` : ''}<br>
+                last error: ${data.lastError ? `<span class="twc-bad">${escapeHtml(data.lastError)}</span>` : '<span class="twc-ok">none</span>'}
+            `;
+        }
+
+        function renderDebugFilters() {
+            const el = document.getElementById('twc-debug-filters');
+            if (!el) return;
+            const levels = ['all', 'info', 'success', 'warn', 'error', 'critical'];
+            el.innerHTML = levels
+                .map((lvl) => `<button class="twc-debug-filter-btn ${((debugFilter || 'all') === lvl) ? 'active' : ''}" data-level="${lvl}">${lvl}</button>`)
+                .join('');
+            el.querySelectorAll('.twc-debug-filter-btn').forEach((btn) => {
+                btn.addEventListener('click', () => {
+                    debugFilter = btn.dataset.level === 'all' ? null : btn.dataset.level;
+                    renderDebugFilters();
+                    renderDebugModal(debugFilter);
+                });
+            });
+        }
+
         function renderDebugModal(filterSeverity) {
+            renderDebugState();
             const body = document.getElementById('twc-debug-body');
             if (!body) return;
             const entries = filterSeverity
@@ -879,7 +1324,9 @@
         }
 
         function openDebug(filterSeverity) {
-            renderDebugModal(filterSeverity);
+            debugFilter = filterSeverity || null;
+            renderDebugFilters();
+            renderDebugModal(debugFilter);
             debugModal.classList.add('open');
             backdrop.classList.add('open');
         }
@@ -888,10 +1335,36 @@
             backdrop.classList.remove('open');
         }
         document.getElementById('twc-debug-close').addEventListener('click', closeDebug);
+
+        document.getElementById('twc-debug-poll').addEventListener('click', () => {
+            Debug.log('info', 'Debug', 'Manual force-poll triggered.');
+            poll();
+        });
+
+        document.getElementById('twc-debug-test').addEventListener('click', () => {
+            Debug.log('info', 'Debug', 'Manual test alert triggered — bypassing all hospital/war checks.');
+            Discord.send({
+                embeds: [{
+                    title: 'War Call test ping',
+                    description: 'If you see this in Discord, your webhook is configured correctly.',
+                    color: 0x00eaff
+                }]
+            }).then(() => {
+                Debug.log('success', 'Debug', 'Test alert sent successfully.');
+            }).catch((err) => {
+                Debug.log('error', 'Debug', `Test alert failed: ${err.message}`);
+            });
+        });
+
+        document.getElementById('twc-debug-clear').addEventListener('click', () => {
+            Debug.entries = [];
+            renderDebugModal(debugFilter);
+        });
+
         // Live-refresh the debug panel while it's open, so it doesn't go
         // stale mid-diagnosis (e.g. while chasing the travel-fetch logs).
         EventBus.on('debug:entry', () => {
-            if (debugModal.classList.contains('open')) renderDebugModal();
+            if (debugModal.classList.contains('open')) renderDebugModal(debugFilter);
         });
 
         function openSettings() {
@@ -908,6 +1381,7 @@
         backdrop.addEventListener('click', () => {
             closeSettings();
             closeDebug();
+            closePingConfig();
         });
 
         document.getElementById('twc-settings-save').addEventListener('click', () => {
@@ -951,18 +1425,21 @@
         });
         document.addEventListener('mousemove', (e) => {
             if (!dragging) return;
-            const left = e.clientX - offX;
-            const top = e.clientY - offY;
+            const width = panelEl.offsetWidth;
+            const rawLeft = e.clientX - offX;
+            const rawTop = e.clientY - offY;
+            const left = Math.min(Math.max(rawLeft, VIEWPORT_MARGIN), Math.max(VIEWPORT_MARGIN, window.innerWidth - width - VIEWPORT_MARGIN));
+            const top = Math.min(Math.max(rawTop, VIEWPORT_MARGIN), Math.max(VIEWPORT_MARGIN, window.innerHeight - 40 - VIEWPORT_MARGIN));
             panelEl.style.left = `${left}px`;
             panelEl.style.top = `${top}px`;
             panelEl.style.right = 'auto';
             uiPrefs.top = top;
-            uiPrefs.right = window.innerWidth - (left + panelEl.offsetWidth);
+            uiPrefs.right = window.innerWidth - (left + width);
         });
         document.addEventListener('mouseup', () => {
             if (dragging) {
                 dragging = false;
-                saveUiPrefs();
+                clampPanelGeometry();
             }
         });
     }
@@ -978,10 +1455,18 @@
             debounceTimer = setTimeout(() => {
                 uiPrefs.width = Math.round(width);
                 uiPrefs.height = Math.round(height);
-                saveUiPrefs();
+                clampPanelGeometry();
             }, 300);
         });
         observer.observe(panelEl);
+
+        // The browser window itself can shrink after a size/position was
+        // saved for a larger screen — re-clamp whenever that happens too.
+        let resizeDebounce = null;
+        window.addEventListener('resize', () => {
+            clearTimeout(resizeDebounce);
+            resizeDebounce = setTimeout(clampPanelGeometry, 150);
+        });
     }
 
     function renderStatusHeader() {
@@ -1134,11 +1619,22 @@
     // MODULE: Poller
     // =========================================================================
     let polling = false;
-    let pollTimer = null;
+    let pollTimeoutHandle = null;
+    let backoffMs = 0;
+    const MAX_BACKOFF_MS = 5 * 60 * 1000; // never wait longer than 5 min between attempts
+
+    // Torn API error format is "CODE: message" — code 5 is specifically
+    // "Too many requests". Detected here rather than assumed, so a change
+    // in Torn's wording doesn't silently break backoff (falls back to
+    // treating it as a normal error instead of misfiring backoff logic).
+    function isRateLimitError(message) {
+        return typeof message === 'string' && message.startsWith('5:');
+    }
 
     async function poll() {
         if (polling) return;
         polling = true;
+        let rateLimitHitThisCycle = false;
 
         try {
             const ownFactionId = Number(userConfig.ownFactionId || 0);
@@ -1158,6 +1654,7 @@
                 const travelResponse = await TravelTracker.fetch();
                 updateTravelState(TravelTracker.derive(travelResponse));
             } catch (travelError) {
+                if (isRateLimitError(travelError.message)) rateLimitHitThisCycle = true;
                 Debug.log('warn', 'Travel', `Failed to fetch travel status: ${travelError.message}`);
             }
 
@@ -1172,19 +1669,21 @@
                 const enemyFactionId = WarDetection.resolveEnemyFactionId(war);
                 if (enemyFactionId) {
                     data.enemy = await WarDetection.getEnemyFactionMembers(enemyFactionId);
-                    for (const player of data.enemy) {
-                        if (shouldAlert(player, now)) fireHospitalAlert(player, 'enemy');
-                    }
                 } else {
                     data.enemy = [];
                     Debug.log('warn', 'WarDetection', 'Active war detected but enemy faction ID could not be resolved.');
                 }
-                for (const player of data.ally) {
-                    if (shouldAlert(player, now)) fireHospitalAlert(player, 'ally');
-                }
             } else {
                 data.enemy = [];
             }
+
+            // Ping evaluation is gated internally to PREP/ACTIVE_WAR by
+            // isPingSystemActive() — calling it unconditionally here means
+            // pings correctly start at PREP (war scheduled) rather than
+            // waiting for ACTIVE_WAR, per spec.
+            evaluatePings(data.enemy, 'enemy');
+            evaluatePings(data.ally, 'ally');
+            pruneFiredPings([...data.ally, ...data.enemy]);
 
             data.lastError = '';
             data.lastUpdate = Date.now();
@@ -1192,23 +1691,38 @@
         } catch (error) {
             data.lastError = error?.message || String(error);
             data.lastUpdate = Date.now();
+            if (isRateLimitError(data.lastError)) rateLimitHitThisCycle = true;
             Debug.log('error', 'Poller', data.lastError);
             render();
         } finally {
             polling = false;
+
+            if (rateLimitHitThisCycle) {
+                backoffMs = backoffMs === 0 ? POLL_INTERVAL_MS : Math.min(backoffMs * 2, MAX_BACKOFF_MS);
+                Debug.log('warn', 'Poller', `Rate limited by Torn — backing off, next attempt in ${formatTime(Math.round((POLL_INTERVAL_MS + backoffMs) / 1000))}.`);
+            } else if (backoffMs > 0) {
+                Debug.log('success', 'Poller', 'Rate limit cleared — back to normal poll interval.');
+                backoffMs = 0;
+            }
+
+            scheduleNextPoll();
         }
     }
 
+    function scheduleNextPoll() {
+        if (pollTimeoutHandle) clearTimeout(pollTimeoutHandle);
+        pollTimeoutHandle = setTimeout(poll, POLL_INTERVAL_MS + backoffMs);
+    }
+
     function startPolling() {
-        if (pollTimer) return;
+        if (pollTimeoutHandle) return;
         poll();
-        pollTimer = setInterval(poll, POLL_INTERVAL_MS);
     }
 
     function stopPolling() {
-        if (pollTimer) {
-            clearInterval(pollTimer);
-            pollTimer = null;
+        if (pollTimeoutHandle) {
+            clearTimeout(pollTimeoutHandle);
+            pollTimeoutHandle = null;
         }
     }
 
