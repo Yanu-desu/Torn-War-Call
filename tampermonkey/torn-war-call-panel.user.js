@@ -18,33 +18,20 @@
     'use strict';
 
     /*
-     * Torn War Call — v3.2.0 "Phase 2"
+     * Torn War Call
      *
-     * Phase 1 recap: modular architecture, centralized state machine,
-     * war-phase detection (v2 API), status header, cyberpunk UI.
+     * A read-only intel panel for Torn faction wars. It watches your
+     * faction and the enemy faction, shows who's about to leave hospital
+     * (with a countdown), tracks your own travel status, and can ping a
+     * Discord channel a set number of seconds before someone lands.
      *
-     * Phase 2 adds:
-     *   - Resizable panel (native corner resize handle, persisted size).
-     *   - Draggable panel with persisted position.
-     *   - Collapsible side tab (click to restore).
-     *   - Full hide via BOTH a Tampermonkey menu command AND a small
-     *     persistent reopen tab, per explicit instruction to do both.
-     *   - Faction-page-only visibility. Torn does full page loads per
-     *     navigation (not a persistent SPA), so this re-evaluates cleanly
-     *     each load; a light interval catches any in-page AJAX tab changes
-     *     within the faction section without needing a MutationObserver.
-     *   - Polling suspends entirely off faction pages (real perf win, not
-     *     just a DOM hide) per the performance requirements.
+     * This script never attacks, clicks, or acts on your behalf — it only
+     * reads public/your-own data from the Torn API and displays it. Safe
+     * to leave running in the background.
      *
-     * Compromise made without asking: "resizable by dragging edges or
-     * corners" is implemented via the browser's native CSS resize handle,
-     * which is corner-only in every major browser. A custom 4-edge drag
-     * system is real added complexity for marginal benefit — flag if you
-     * actually want all four edges built out.
-     *
-     * Still NOT in scope: travel notifications, ping config slots,
-     * debug severity filter/search UI, notification history panel UI,
-     * health monitor, import/export, error-recovery framework.
+     * New here? Open the panel and click the gear icon first — that's
+     * where your API key, faction ID, and Discord webhooks go. Nothing
+     * works until that's filled in.
      */
 
     // =========================================================================
@@ -55,7 +42,7 @@
         build: 24,
         releaseDate: '2026-08-08',
         initTime: new Date(),
-        phase: 'Phase 6 (final) — import/export config, error recovery, performance pass'
+        notes: 'Final release — all planned features complete.'
     };
 
     // =========================================================================
@@ -451,19 +438,16 @@
 
     // =========================================================================
     // MODULE: TravelTracker
-    // Detects Torn travel status and derives outbound/returning phase.
+    // Detects Torn travel status and figures out whether the player is
+    // heading out or heading home.
     //
-    // API note: this uses the v1 `/user/?selections=travel,basic` endpoint,
-    // not v2 — travel is a legacy selection that's been stable for years,
-    // unlike the faction/wars endpoint that forced the v2 switch earlier.
-    // If this throws error 23 ("only available in API v2") the same way
-    // the faction call did, that means Torn deprecated it since — report
-    // back and this gets the same v2 treatment.
+    // Uses the v1 `/user/?selections=travel,basic` endpoint. If Torn ever
+    // deprecates this in favor of v2 (like they did with faction data),
+    // you'll see error 23 ("only available in API v2") — swap this over
+    // to `TornAPI.requestV2()` the same way WarDetection above was fixed.
     //
-    // Per explicit instruction: no wall-clock ETAs are shown, only a
-    // direction label (Torn -> destination, or destination -> Torn) and a
-    // relative countdown. formatTime() already returns a duration, never
-    // a clock time, so that constraint falls out naturally.
+    // Only shows a direction (Torn -> destination, or destination -> Torn)
+    // and a countdown — never a clock time. See formatTime() below.
     // =========================================================================
     const TravelTracker = {
         async fetch() {
@@ -482,14 +466,14 @@
 
             if (!isTraveling || !destination) return null;
 
-            // Confirmed via live API response (2026-08-08): Torn sets
-            // travel.destination to "Torn" itself on the return leg — that's
-            // the reliable signal. Description-text matching kept only as a
-            // fallback in case that ever changes.
+            // Torn sets travel.destination to "Torn" itself once you start
+            // the return leg — that's the reliable signal for "returning".
+            // Description-text matching is kept only as a backup.
             const description = String(status.description || '').toLowerCase();
             const isReturning = destination.toLowerCase() === 'torn' || description.includes('return');
             const phase = isReturning ? 'returning' : 'outbound';
             const arrival = Number(travel.timestamp || travel.time_left_end || status.until || 0);
+
 
             return { phase, destination, arrival };
         }
@@ -539,11 +523,9 @@
     // MODULE: Formatting utilities
     // =========================================================================
 
-    // Formats a duration for display — never a wall-clock time, always
-    // relative (per the explicit "no timestamps" instruction from Phase 3).
-    // Shows hr/min/sec, omitting leading zero units (a 45-second countdown
-    // shows "45sec", not "0hr 0min 45sec"), and pluralizes each unit only
-    // when its value is greater than 1 (1sec, 2secs, 1min, 5mins, 1hr, 3hrs).
+    // Formats a duration as "1hr 5mins 3secs" — always a countdown, never
+    // a clock time. Skips leading zero units (45 seconds shows "45sec",
+    // not "0hr 0min 45sec") and pluralizes each unit above 1.
     function formatTime(seconds) {
         seconds = Math.max(0, Math.floor(seconds));
 
@@ -566,10 +548,10 @@
     }
 
     // =========================================================================
-    // MODULE: PingSystem (Phase 4)
-    // Up to 3 configurable ping "slots" — each with its own countdown
-    // threshold, custom message template, and enable/disable toggle.
-    // Replaces the old single hardcoded 60-second alert from Phases 1-3.
+    // MODULE: PingSystem
+    // Up to 3 configurable ping "slots" per side (ally/enemy) — each with
+    // its own countdown threshold, custom message template, and its own
+    // enable/disable toggle.
     //
     // Delivery is dual-channel: Discord webhook (if configured) AND an
     // in-panel toast + audio beep, so a ping isn't silently missed if
@@ -577,8 +559,8 @@
     // rather than Discord at the moment it fires.
     //
     // Activation is gated to the state machine, not user-configurable —
-    // pings only fire during PREP or ACTIVE_WAR and stop the instant the
-    // war ends or peace resumes, per spec.
+    // pings only fire during War Preparation or Active War, and stop the
+    // instant the war ends or peace resumes.
     // =========================================================================
 
     // ⚙ CUSTOMIZE: these are the factory defaults shown the first time
@@ -1450,9 +1432,9 @@
                 .join('');
         }
 
-        // Health checks — each returns { name, pass, message }. Independent
-        // ally/enemy webhook items per explicit instruction, not one
-        // combined "Discord configured" check.
+        // Health checks — each returns { name, pass, message }. Ally and
+        // enemy webhooks are checked separately since one can be working
+        // while the other is misconfigured.
         function runHealthChecks() {
             const checks = [];
             checks.push({
@@ -1885,8 +1867,8 @@
         }
 
         // traveling or abroad — no urgency pulse, just status + countdown
-        // if one applies (traveling members have an arrival `until`;
-        // stationary "abroad" members don't, confirmed via live API data).
+        // if one applies. Members mid-flight (traveling) have an arrival
+        // time; members just sitting in a country (abroad) don't.
         const hasCountdown = player._kind === 'traveling' && player.until > now;
         const metaText = hasCountdown
             ? `${player.description || 'Traveling'} · ${formatTime(player.until - now)}`
@@ -2008,9 +1990,8 @@
         // IMPORTANT: only the panel's DOM visibility is gated to faction pages.
         // Polling (and therefore Discord alerts) must keep running regardless —
         // the entire point of a Discord alert is to notify you when you are
-        // NOT looking at the panel. Tying the poller itself to page visibility
-        // was a Phase 2 regression: it silently killed all alerts the moment
-        // you navigated off the faction page.
+        // NOT looking at the panel. Do not tie the poller itself to page
+        // visibility, or alerts silently stop the moment you navigate away.
         applyVisibilityToDom();
         Debug.log('info', 'Visibility', onFactionPage ? 'Entered faction page — panel shown.' : 'Left faction page — panel hidden, polling continues.');
     });
@@ -2091,10 +2072,9 @@
                 data.enemy = [];
             }
 
-            // Ping evaluation is gated internally to PREP/ACTIVE_WAR by
-            // isPingSystemActive() — calling it unconditionally here means
-            // pings correctly start at PREP (war scheduled) rather than
-            // waiting for ACTIVE_WAR, per spec.
+            // Ping evaluation checks the war state internally via
+            // isPingSystemActive(), so pings correctly start as soon as a
+            // war is scheduled (War Preparation), not only once it's live.
             evaluatePings(data.enemy, 'enemy');
             evaluatePings(data.ally, 'ally');
             pruneFiredPings(data.ally, data.enemy);
@@ -2181,7 +2161,7 @@
         }, 1000);
 
         History.add({ type: 'script_initialized' });
-        Debug.log('success', 'Init', `Torn War Call ${BuildInfo.version} initialized (${BuildInfo.phase})`);
+        Debug.log('success', 'Init', `Torn War Call ${BuildInfo.version} initialized (${BuildInfo.notes})`);
     }
 
     if (document.readyState === 'loading') {

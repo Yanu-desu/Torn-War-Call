@@ -1,44 +1,68 @@
 # Torn War Call
 
-See [CHANGELOG.md](./CHANGELOG.md) for version history.
+A browser panel for Torn faction wars. It watches hospital timers for your
+faction and the enemy faction, tracks your own travel status, and can ping
+a Discord channel a set number of seconds before someone lands.
 
-Read-only faction war intel bot. Polls the Torn API for hospital status on both
-your faction and the enemy faction, and pings Discord ~60s before someone's
-hospital timer runs out.
+It only reads data — it never attacks, clicks, or does anything on your
+behalf. Safe to leave running.
 
-## What it does
+## Install
 
-* Detects your active ranked war automatically (or use a pinned `ENEMY_FACTION_ID`).
-* Polls own + enemy faction rosters on an interval.
-* Fires a Discord embed when an **enemy** is ~1 min from leaving hospital (call to hit).
-* Fires a Discord embed when an **ally** is ~1 min from leaving hospital (heads up to move).
-* De-dupes alerts per hospital stay — you get one ping, not one every poll cycle.
+1. Get the [Tampermonkey](https://www.tampermonkey.net/) browser extension.
+2. Go to [ Greasy Fork ](https://greasyfork.org/en) and search [Torn War Call](https://greasyfork.org/en/scripts/590344-torn-war-call).
+3. Go to your faction page on torn.com. The panel appears top-right.
 
-## What it deliberately does NOT do
+## First-time setup
 
-* No auto-attacking. No auto-anything on Torn's side. This only reads data and
-  posts to Discord. Wire up attack automation and you're gambling with a ban —
-  not my problem to solve, and you shouldn't want it solved.
+Click the **gear icon** on the panel. You need three things:
 
-## Installation
+| Field | Where to find it |
+|---|---|
+| Torn API key | torn.com → Settings → API Keys → create a **Limited Access** key |
+| Own Faction ID | The number in your faction's URL: `factions.php?...&ID=12345` |
+| Discord Webhook (ally + enemy) | Discord channel → Settings → Integrations → Webhooks |
 
-1. Install Tampermonkey.
-2. Go to the Control Panel.
-3. Add the script from [Greasy Fork](https://greasyfork.org/en/scripts/590344-torn-war-call-panel).
-4. Go to Torn and reload.
+Faction ID is required. The API key is required. Webhooks are optional —
+without them you still get the full in-panel display, just no Discord pings.
 
-## Development Notes
+Hit Save. The panel should show a status like "At Peace" within a few
+seconds. If it doesn't, click the **wrench icon** for the debug panel —
+it'll tell you exactly what's wrong.
 
-* The travel feature will **not be implemented for now** and has been rolled back.
-  I currently don't have enough knowledge to implement it properly, so it will
-  remain on hold until help or better ideas are available.
-* Sorry for the UI clutter from the previous travel implementation. The feature has
-  been rolled back for now while the implementation is being reworked.
-* Customizable UI, text, and additional quality-of-life features will be added
-  soon.
+## About the API
+The API only **READS** you, your faction member and enemy hospital time, travel time and if anyone is abroad. I **DO NOT** collect or **STORE** your data as it is stored within your hardware and you have the absolute freedom with it.
 
-## License
 
-See the [LICENSE](./LICENSE) file for licensing information.
+## What each icon does
 
-### Forum Launch Post soon
+- ⚙ **Gear** — your API key, faction ID, and Discord webhooks
+- 🔔 **Bell** — ping settings: up to 3 alert thresholds per side (e.g. "warn
+  me at 60 seconds, then again at 10 seconds")
+- 🔧 **Wrench** — debug panel: live log, event history, and a health check
+  that tells you what's working and what isn't
+
+## The panel itself
+
+- **Enemy / Ally** sections list anyone hospitalized, traveling, or abroad.
+  Rows glow when someone's close to leaving hospital.
+- Click a section title to collapse it.
+- Drag the header to move the panel. Drag the bottom-right corner to resize.
+- Collapse to a small tab, or hide it completely (bring it back from the
+  Tampermonkey menu, or the small eye tab int the bottom right corner that stays visible).
+- The panel only shows up on faction pages — it gets out of your way
+  everywhere else on Torn.
+
+## Backing up your settings
+
+Settings → **Export Config** downloads a JSON file with everything (API
+key, webhooks, ping settings). **This file contains your key and webhook
+URLs in plain text — don't share it.** Import it back the same way on
+another browser or after a reinstall.
+
+## Troubleshooting
+
+Open the wrench icon → **Health** tab first. It checks your API key,
+faction ID, both webhooks, the polling timer, and more, with a plain-English
+reason next to anything that's failing. That's almost always faster than
+guessing.
