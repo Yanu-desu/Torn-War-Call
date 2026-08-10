@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn War Call
 // @namespace    https://github.com/Yanu-desu/Torn-War-Call
-// @version      4.0.1
+// @version      6.0.0
 // @description  Read-only Torn faction war hospital intel panel with Discord alerts, centralized state machine.
 // @author       Yanu [3028844]
 // @license      MIT
@@ -51,11 +51,11 @@
     // MODULE: BuildInfo
     // =========================================================================
     const BuildInfo = {
-        version: '4.0.1',
-        build: 20,
+        version: '6.0.0',
+        build: 24,
         releaseDate: '2026-08-08',
         initTime: new Date(),
-        phase: 'Phase 4 fix — exponential backoff on API rate limiting'
+        phase: 'Phase 6 (final) — import/export config, error recovery, performance pass'
     };
 
     // =========================================================================
@@ -148,10 +148,24 @@
     };
 
     const userConfig = ConfigStore.load();
+
+    // One-time migration: earlier versions had a single shared webhook.
+    // Copy it into both slots so upgrading doesn't silently kill alerts
+    // that were already working — the user can split them apart in
+    // Settings whenever they actually want to.
+    if (userConfig.discordWebhook && !userConfig.discordWebhookAlly && !userConfig.discordWebhookEnemy) {
+        userConfig.discordWebhookAlly = userConfig.discordWebhook;
+        userConfig.discordWebhookEnemy = userConfig.discordWebhook;
+        delete userConfig.discordWebhook;
+        ConfigStore.save(userConfig);
+    }
     const uiPrefs = Object.assign(
-        { width: 420, height: null, top: 120, right: 20, collapsed: false, hidden: false },
+        { width: 420, height: null, top: 120, right: 20, collapsed: false, hidden: false,
+          sectionsCollapsed: { enemy: false, ally: false } },
         UIPrefsStore.load()
     );
+    // Backfill in case an older saved prefs blob predates this field.
+    uiPrefs.sectionsCollapsed = uiPrefs.sectionsCollapsed || { enemy: false, ally: false };
 
     function saveUiPrefs() {
         UIPrefsStore.save(uiPrefs);
@@ -331,10 +345,13 @@
     // MODULE: Discord
     // =========================================================================
     const Discord = {
-        send(payload) {
-            const webhook = userConfig.discordWebhook;
+        // side: 'ally' | 'enemy' — picks which webhook to use. Falls back to
+        // the ally webhook if side is omitted, for any call site that
+        // predates the ally/enemy split.
+        send(payload, side = 'ally') {
+            const webhook = side === 'enemy' ? userConfig.discordWebhookEnemy : userConfig.discordWebhookAlly;
             if (!webhook) {
-                Debug.log('warn', 'Discord', 'No webhook configured — alert skipped.');
+                Debug.log('warn', 'Discord', `No ${side} webhook configured — alert skipped.`);
                 return Promise.resolve();
             }
             return new Promise((resolve, reject) => {
@@ -575,18 +592,29 @@
         ];
     }
 
-    function ensurePingSlots() {
+    function ensurePingSlots(side) {
+        const key = side === 'enemy' ? 'pingSlotsEnemy' : 'pingSlotsAlly';
         const defaults = getDefaultPingSlots();
-        if (!Array.isArray(userConfig.pingSlots)) {
-            userConfig.pingSlots = defaults;
+
+        // One-time migration: earlier versions had one shared slot set for
+        // both sides. Copy it into both so upgrading doesn't silently wipe
+        // out pings someone already configured and tested.
+        if (Array.isArray(userConfig.pingSlots) && !userConfig.pingSlotsAlly && !userConfig.pingSlotsEnemy) {
+            userConfig.pingSlotsAlly = userConfig.pingSlots;
+            userConfig.pingSlotsEnemy = JSON.parse(JSON.stringify(userConfig.pingSlots));
+            delete userConfig.pingSlots;
+        }
+
+        if (!Array.isArray(userConfig[key])) {
+            userConfig[key] = defaults;
         } else {
             // Backfill any missing slot and hard-cap at 3, regardless of
             // what an older or malformed saved config contains.
-            userConfig.pingSlots = defaults
-                .map((def, i) => ({ ...def, ...(userConfig.pingSlots[i] || {}) }))
+            userConfig[key] = defaults
+                .map((def, i) => ({ ...def, ...(userConfig[key][i] || {}) }))
                 .slice(0, 3);
         }
-        return userConfig.pingSlots;
+        return userConfig[key];
     }
 
     const firedPings = new Set(); // dedup key: `${slotId}:${playerId}:${until}`
@@ -652,7 +680,7 @@
         const time = formatTime(secondsLeft);
         const message = fillTemplate(slot.message, { name: player.name, time, level: player.level, side });
 
-        lastFired[slot.id] = { at: Date.now(), playerName: player.name };
+        lastFired[`${side}:${slot.id}`] = { at: Date.now(), playerName: player.name };
 
         // In-panel delivery always attempted first — it has no dependency
         // on Discord being configured correctly.
@@ -676,7 +704,7 @@
                     ],
                     timestamp: new Date().toISOString()
                 }]
-            });
+            }, side);
         } catch (error) {
             Debug.log('error', 'PingSystem', `Discord delivery failed for slot ${slot.id}: ${error.message}`);
         }
@@ -684,7 +712,7 @@
 
     function evaluatePings(players, side) {
         if (!isPingSystemActive()) return;
-        const enabledSlots = ensurePingSlots().filter((s) => s.enabled);
+        const enabledSlots = ensurePingSlots(side).filter((s) => s.enabled);
         if (!enabledSlots.length) return;
 
         const now = Math.floor(Date.now() / 1000);
@@ -703,14 +731,15 @@
 
     // Drops dedup entries for hospital stays that are no longer current
     // (player left hospital, or their `until` changed), so this Set doesn't
-    // grow unbounded across a long session. Called once per poll.
-    function pruneFiredPings(currentPlayers) {
+    // grow unbounded across a long session. Called once per poll, separately
+    // for each side since ally and enemy now have independent slot configs.
+    function pruneFiredPings(allyPlayers, enemyPlayers) {
         const validKeys = new Set();
-        const slots = ensurePingSlots();
-        for (const p of currentPlayers) {
-            for (const slot of slots) {
-                validKeys.add(`${slot.id}:${p.id}:${p.until}`);
-            }
+        for (const slot of ensurePingSlots('ally')) {
+            for (const p of allyPlayers) validKeys.add(`${slot.id}:${p.id}:${p.until}`);
+        }
+        for (const slot of ensurePingSlots('enemy')) {
+            for (const p of enemyPlayers) validKeys.add(`${slot.id}:${p.id}:${p.until}`);
         }
         for (const key of firedPings) {
             if (!validKeys.has(key)) firedPings.delete(key);
@@ -727,7 +756,9 @@
         expand: `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 6 9 12 15 18"/></svg>`,
         eyeOff: `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.9 17.9A10.6 10.6 0 0 1 12 20c-7 0-10-8-10-8a18.4 18.4 0 0 1 4.2-5.2M9.9 4.2A10.6 10.6 0 0 1 12 4c7 0 10 8 10 8a18.4 18.4 0 0 1-2.2 3.3M14.1 14.1a3 3 0 1 1-4.2-4.2"/><line x1="2" y1="2" x2="22" y2="22"/></svg>`,
         eye: `<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`,
-        bell: `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>`
+        bell: `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>`,
+        chevronDown: `<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>`,
+        chevronRight: `<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 6 15 12 9 18"/></svg>`
     };
 
     // =========================================================================
@@ -791,6 +822,12 @@
 
     let panelEl, reopenTabEl, collapsedTabEl;
 
+    // Performance: render() can run up to once per second during active
+    // countdowns. Re-querying the DOM by ID that often is wasted work —
+    // these get populated once in createPanel() and reused for the life
+    // of the panel instead.
+    const els = {};
+
     function applyPanelGeometry() {
         if (!panelEl) return;
         panelEl.style.top = `${uiPrefs.top}px`;
@@ -844,31 +881,51 @@
         saveUiPrefs();
     }
 
+    const FADE_MS = 180;
+
+    // Animates any of the panel's floating elements (main panel, collapsed
+    // tab, reopen tab) in/out instead of an instant display:none — this is
+    // the "simple animation when interacting" applied consistently rather
+    // than as a one-off special case for just the hide button.
+    function setElementVisible(el, visible, displayValue = 'flex') {
+        if (!el) return;
+        if (visible) {
+            el.style.display = displayValue;
+            void el.offsetWidth; // force reflow so the fade-in actually transitions
+            el.classList.remove('twc-fade-hidden');
+        } else {
+            el.classList.add('twc-fade-hidden');
+            setTimeout(() => {
+                if (el.classList.contains('twc-fade-hidden')) el.style.display = 'none';
+            }, FADE_MS);
+        }
+    }
+
     function applyVisibilityToDom() {
         const onFactionPage = Visibility.isOnFactionPage();
 
         if (!onFactionPage) {
-            if (panelEl) panelEl.style.display = 'none';
-            if (collapsedTabEl) collapsedTabEl.style.display = 'none';
-            if (reopenTabEl) reopenTabEl.style.display = 'none';
+            setElementVisible(panelEl, false);
+            setElementVisible(collapsedTabEl, false);
+            setElementVisible(reopenTabEl, false);
             return;
         }
 
         if (uiPrefs.hidden) {
-            if (panelEl) panelEl.style.display = 'none';
-            if (collapsedTabEl) collapsedTabEl.style.display = 'none';
-            if (reopenTabEl) reopenTabEl.style.display = 'flex';
+            setElementVisible(panelEl, false);
+            setElementVisible(collapsedTabEl, false);
+            setElementVisible(reopenTabEl, true);
             return;
         }
 
-        if (reopenTabEl) reopenTabEl.style.display = 'none';
+        setElementVisible(reopenTabEl, false);
 
         if (uiPrefs.collapsed) {
-            if (panelEl) panelEl.style.display = 'none';
-            if (collapsedTabEl) collapsedTabEl.style.display = 'flex';
+            setElementVisible(panelEl, false);
+            setElementVisible(collapsedTabEl, true);
         } else {
-            if (panelEl) panelEl.style.display = 'flex';
-            if (collapsedTabEl) collapsedTabEl.style.display = 'none';
+            setElementVisible(panelEl, true);
+            setElementVisible(collapsedTabEl, false);
         }
     }
 
@@ -920,19 +977,24 @@
             .twc-section { padding: 10px; border-bottom: 1px solid rgba(0,234,255,.12); }
             .twc-section-title { margin-bottom: 8px; font-weight: bold; font-size: 10px; letter-spacing: 1px;
                 text-transform: uppercase; color: #ff2ec4; opacity: .85; }
+            .twc-section-toggle { cursor: pointer; display: flex; align-items: center; justify-content: space-between;
+                user-select: none; transition: opacity .15s ease; }
+            .twc-section-toggle:hover { opacity: 1; }
+            .twc-section-chevron { display: inline-flex; transition: transform .18s ease; }
+            .twc-section-toggle.twc-section-collapsed .twc-section-chevron { transform: rotate(-90deg); }
+            .twc-section-content { overflow: hidden; max-height: 20000px; opacity: 1;
+                transition: max-height .22s ease, opacity .18s ease, margin .18s ease; }
+            .twc-section-content.twc-section-collapsed { max-height: 0; opacity: 0; margin: 0; }
             .twc-player { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 8px;
                 margin-bottom: 4px; border-radius: 3px; background: rgba(0,234,255,.03); border: 1px solid rgba(0,234,255,.15); }
             .twc-player.twc-warning { border-color: #ff2ec4; background: rgba(255,46,196,.12);
                 box-shadow: 0 0 8px rgba(255,46,196,.4); animation: twc-pulse 1s infinite; }
+            .twc-player-travel { border-color: rgba(127,179,255,.35); background: rgba(127,179,255,.04); }
             @keyframes twc-pulse { 0%,100% { opacity: 1; } 50% { opacity: .55; } }
             .twc-player-name { min-width: 0; flex: 1; }
             .twc-player-name a { color: #baf9ff; text-decoration: none; }
             .twc-player-name a:hover { text-decoration: underline; color: #00eaff; }
             .twc-player-meta { color: #6c8a99; font-size: 11px; text-align: right; }
-            .twc-side-tag { display: inline-block; font-size: 9px; letter-spacing: .5px; text-transform: uppercase;
-                padding: 1px 5px; border-radius: 2px; margin-right: 5px; font-weight: bold; }
-            .twc-side-ally { background: rgba(57,255,138,.15); color: #39ff8a; }
-            .twc-side-enemy { background: rgba(255,92,92,.15); color: #ff5c5c; }
             .twc-empty { color: #4a5c66; font-style: italic; padding: 4px 0; }
             #twc-error { color: #ff2ec4; white-space: pre-wrap; font-size: 11px; }
             #twc-last-update { color: #5b7480; font-size: 11px; }
@@ -952,15 +1014,21 @@
                 box-shadow: 0 0 10px rgba(0,234,255,.35); }
             #twc-reopen-tab:hover { box-shadow: 0 0 16px rgba(0,234,255,.6); }
 
-            #twc-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.6); z-index: 999998; display: none; }
-            #twc-backdrop.open { display: block; }
-            #twc-settings-modal { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            #twc-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.6); z-index: 999998;
+                opacity: 0; visibility: hidden; transition: opacity .18s ease, visibility 0s linear .18s; }
+            #twc-backdrop.open { opacity: 1; visibility: visible; transition: opacity .18s ease, visibility 0s linear 0s; }
+            #twc-settings-modal { position: fixed; top: 50%; left: 50%;
                 width: 320px; z-index: 999999; color: #baf9ff;
                 background: linear-gradient(180deg, #0b0e14 0%, #0a0c10 100%);
                 border: 1px solid #ff2ec4; border-radius: 6px;
                 box-shadow: 0 0 14px rgba(255,46,196,.4), 0 0 40px rgba(0,234,255,.1);
-                display: none; font-family: 'Consolas','Courier New',monospace; font-size: 13px; }
-            #twc-settings-modal.open { display: block; }
+                font-family: 'Consolas','Courier New',monospace; font-size: 13px;
+                opacity: 0; visibility: hidden; pointer-events: none;
+                transform: translate(-50%, -50%) scale(.95);
+                transition: opacity .18s ease, transform .18s ease, visibility 0s linear .18s; }
+            #twc-settings-modal.open { opacity: 1; visibility: visible; pointer-events: auto;
+                transform: translate(-50%, -50%) scale(1);
+                transition: opacity .18s ease, transform .18s ease, visibility 0s linear 0s; }
             #twc-settings-modal * { box-sizing: border-box; }
             #twc-settings-header { display: flex; justify-content: space-between; align-items: center;
                 padding: 10px 12px; border-bottom: 1px solid rgba(255,46,196,.3); background: rgba(255,46,196,.05);
@@ -979,15 +1047,27 @@
                 font-family: inherit; font-size: 11px; letter-spacing: 1px; text-transform: uppercase;
                 transition: background .15s, box-shadow .15s; }
             #twc-settings-save:hover { background: rgba(0,234,255,.18); box-shadow: 0 0 10px rgba(0,234,255,.4); }
+            .twc-settings-divider { border-top: 1px solid rgba(0,234,255,.2); margin: 14px 0 4px; }
+            #twc-config-io { display: flex; gap: 6px; }
+            #twc-config-io button { flex: 1; padding: 6px; cursor: pointer;
+                background: rgba(255,209,102,.08); color: #ffd166; border: 1px solid #ffd166; border-radius: 3px;
+                font-family: inherit; font-size: 10px; letter-spacing: .5px; text-transform: uppercase; }
+            #twc-config-io button:hover { background: rgba(255,209,102,.18); box-shadow: 0 0 8px rgba(255,209,102,.4); }
+            .twc-io-hint { font-size: 9px; color: #6c8a99; margin-top: 6px; line-height: 1.4; }
 
-            #twc-debug-modal { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            #twc-debug-modal { position: fixed; top: 50%; left: 50%;
                 width: 460px; max-height: 70vh; display: flex; flex-direction: column;
                 z-index: 999999; color: #baf9ff;
                 background: linear-gradient(180deg, #0b0e14 0%, #0a0c10 100%);
                 border: 1px solid #39ff8a; border-radius: 6px;
                 box-shadow: 0 0 14px rgba(57,255,138,.4), 0 0 40px rgba(0,234,255,.1);
-                display: none; font-family: 'Consolas','Courier New',monospace; font-size: 11px; }
-            #twc-debug-modal.open { display: flex; }
+                font-family: 'Consolas','Courier New',monospace; font-size: 11px;
+                opacity: 0; visibility: hidden; pointer-events: none;
+                transform: translate(-50%, -50%) scale(.95);
+                transition: opacity .18s ease, transform .18s ease, visibility 0s linear .18s; }
+            #twc-debug-modal.open { opacity: 1; visibility: visible; pointer-events: auto;
+                transform: translate(-50%, -50%) scale(1);
+                transition: opacity .18s ease, transform .18s ease, visibility 0s linear 0s; }
             #twc-debug-header { display: flex; justify-content: space-between; align-items: center;
                 padding: 10px 12px; border-bottom: 1px solid rgba(57,255,138,.3); background: rgba(57,255,138,.05);
                 font-weight: bold; letter-spacing: 1px; text-transform: uppercase; color: #39ff8a;
@@ -1002,6 +1082,18 @@
                 background: rgba(57,255,138,.08); color: #39ff8a; border: 1px solid #39ff8a; border-radius: 3px;
                 font-family: inherit; font-size: 10px; letter-spacing: .5px; text-transform: uppercase; }
             #twc-debug-actions button:hover { background: rgba(57,255,138,.18); box-shadow: 0 0 8px rgba(57,255,138,.4); }
+            #twc-debug-tabs { display: flex; border-bottom: 1px solid rgba(57,255,138,.2); flex: 0 0 auto; }
+            .twc-debug-tab-btn { flex: 1; padding: 7px; cursor: pointer; background: transparent; color: #6c8a99;
+                border: none; border-bottom: 2px solid transparent; font-family: inherit; font-size: 10px;
+                letter-spacing: 1px; text-transform: uppercase; }
+            .twc-debug-tab-btn:hover { color: #baf9ff; }
+            .twc-debug-tab-btn.active { color: #39ff8a; border-bottom-color: #39ff8a; }
+            .twc-health-row { display: flex; align-items: center; gap: 8px; padding: 5px 2px; border-bottom: 1px solid rgba(255,255,255,.05); }
+            .twc-health-icon { width: 16px; text-align: center; font-weight: bold; }
+            .twc-health-pass .twc-health-icon { color: #39ff8a; }
+            .twc-health-fail .twc-health-icon { color: #ff2ec4; }
+            .twc-health-name { width: 140px; flex: 0 0 auto; color: #baf9ff; }
+            .twc-health-msg { color: #6c8a99; flex: 1; word-break: break-word; }
             #twc-debug-filters { display: flex; gap: 4px; padding: 6px 12px; flex: 0 0 auto; flex-wrap: wrap; }
             .twc-debug-filter-btn { padding: 3px 8px; cursor: pointer; background: transparent; color: #6c8a99;
                 border: 1px solid rgba(108,138,153,.4); border-radius: 10px; font-family: inherit; font-size: 9px;
@@ -1030,14 +1122,19 @@
                 box-shadow: 0 0 14px rgba(255,46,196,.5); opacity: 1; transition: opacity .6s ease; }
             .twc-toast.twc-toast-out { opacity: 0; }
 
-            #twc-ping-modal { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
-                width: 340px; max-height: 75vh; display: none; flex-direction: column;
+            #twc-ping-modal { position: fixed; top: 50%; left: 50%;
+                width: 560px; max-width: 92vw; max-height: 75vh; display: flex; flex-direction: column;
                 z-index: 999999; color: #baf9ff;
                 background: linear-gradient(180deg, #0b0e14 0%, #0a0c10 100%);
                 border: 1px solid #ffd166; border-radius: 6px;
                 box-shadow: 0 0 14px rgba(255,209,102,.4), 0 0 40px rgba(0,234,255,.1);
-                font-family: 'Consolas','Courier New',monospace; font-size: 12px; }
-            #twc-ping-modal.open { display: flex; }
+                font-family: 'Consolas','Courier New',monospace; font-size: 12px;
+                opacity: 0; visibility: hidden; pointer-events: none;
+                transform: translate(-50%, -50%) scale(.95);
+                transition: opacity .18s ease, transform .18s ease, visibility 0s linear .18s; }
+            #twc-ping-modal.open { opacity: 1; visibility: visible; pointer-events: auto;
+                transform: translate(-50%, -50%) scale(1);
+                transition: opacity .18s ease, transform .18s ease, visibility 0s linear 0s; }
             #twc-ping-header { display: flex; justify-content: space-between; align-items: center;
                 padding: 10px 12px; border-bottom: 1px solid rgba(255,209,102,.3); background: rgba(255,209,102,.05);
                 font-weight: bold; letter-spacing: 1px; text-transform: uppercase; color: #ffd166;
@@ -1046,6 +1143,12 @@
             #twc-ping-close:hover { opacity: 1; text-shadow: 0 0 6px #ffd166; }
             #twc-ping-body { padding: 10px 12px; overflow-y: auto; flex: 1 1 auto; min-height: 0; }
             .twc-ping-hint { font-size: 10px; color: #6c8a99; margin-bottom: 10px; line-height: 1.5; }
+            #twc-ping-columns { display: flex; gap: 10px; }
+            .twc-ping-column { flex: 1 1 0; min-width: 0; }
+            .twc-ping-column-title { font-size: 10px; font-weight: bold; letter-spacing: 1px; text-transform: uppercase;
+                margin-bottom: 6px; padding-bottom: 4px; border-bottom: 1px solid rgba(255,209,102,.25); }
+            .twc-ping-column-ally { color: #39ff8a; }
+            .twc-ping-column-enemy { color: #ff5c5c; }
             .twc-ping-slot { border: 1px solid rgba(255,209,102,.25); border-radius: 4px; padding: 8px; margin-bottom: 10px; }
             .twc-ping-slot-active { border-color: #ffd166; background: rgba(255,209,102,.04); }
             .twc-ping-slot-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
@@ -1090,16 +1193,18 @@
             <div id="twc-travel" style="display:none;"></div>
             <div id="twc-body-scroll">
                 <div class="twc-section">
-                    <div class="twc-section-title">Enemy</div>
-                    <div id="twc-enemy-list"><div class="twc-empty">Loading...</div></div>
+                    <div class="twc-section-title twc-section-toggle" data-section="enemy">
+                        <span>Enemy</span>
+                        <span class="twc-section-chevron">${Icons.chevronDown}</span>
+                    </div>
+                    <div id="twc-enemy-list" class="twc-section-content"><div class="twc-empty">Loading...</div></div>
                 </div>
                 <div class="twc-section">
-                    <div class="twc-section-title">Ally</div>
-                    <div id="twc-ally-list"><div class="twc-empty">Loading...</div></div>
-                </div>
-                <div class="twc-section">
-                    <div class="twc-section-title">Traveling / Abroad</div>
-                    <div id="twc-traveling-list"><div class="twc-empty">Loading...</div></div>
+                    <div class="twc-section-title twc-section-toggle" data-section="ally">
+                        <span>Ally</span>
+                        <span class="twc-section-chevron">${Icons.chevronDown}</span>
+                    </div>
+                    <div id="twc-ally-list" class="twc-section-content"><div class="twc-empty">Loading...</div></div>
                 </div>
             </div>
             <div id="twc-footer">
@@ -1109,6 +1214,14 @@
             </div>
         `;
         document.body.appendChild(panelEl);
+
+        els.status = document.getElementById('twc-status');
+        els.travel = document.getElementById('twc-travel');
+        els.enemyList = document.getElementById('twc-enemy-list');
+        els.allyList = document.getElementById('twc-ally-list');
+        els.error = document.getElementById('twc-error');
+        els.lastUpdate = document.getElementById('twc-last-update');
+        els.version = document.getElementById('twc-version');
         applyPanelGeometry();
 
         collapsedTabEl = document.createElement('div');
@@ -1144,9 +1257,19 @@
                 <input id="twc-input-ownfaction" type="text" value="${escapeHtml(userConfig.ownFactionId || '')}">
                 <div class="twc-field-label">Enemy Faction ID (optional pin)</div>
                 <input id="twc-input-enemyfaction" type="text" value="${escapeHtml(userConfig.enemyFactionId || '')}">
-                <div class="twc-field-label">Discord Webhook URL</div>
-                <input id="twc-input-webhook" type="password" value="${escapeHtml(userConfig.discordWebhook || '')}">
+                <div class="twc-field-label">Ally Discord Webhook URL</div>
+                <input id="twc-input-webhook-ally" type="password" value="${escapeHtml(userConfig.discordWebhookAlly || '')}">
+                <div class="twc-field-label">Enemy Discord Webhook URL</div>
+                <input id="twc-input-webhook-enemy" type="password" value="${escapeHtml(userConfig.discordWebhookEnemy || '')}">
                 <button id="twc-settings-save">Save</button>
+                <div class="twc-settings-divider"></div>
+                <div class="twc-field-label">Backup / Restore</div>
+                <div id="twc-config-io">
+                    <button id="twc-export-config">Export Config</button>
+                    <button id="twc-import-config">Import Config</button>
+                    <input type="file" id="twc-import-file" accept="application/json" style="display:none;">
+                </div>
+                <div class="twc-io-hint">Exports include your API key and webhook URLs in plain text — treat the file like a password.</div>
             </div>
         `;
         document.body.appendChild(settingsModal);
@@ -1160,40 +1283,49 @@
             </div>
             <div id="twc-ping-body">
                 <div class="twc-ping-hint">
-                    Up to 3 slots. Each fires independently once its countdown threshold is
+                    Up to 3 slots per side. Each fires independently once its countdown threshold is
                     crossed. Placeholders: {name} {time} {level} {side}.
                     Pings only fire during War Preparation or Active War.
                 </div>
-                <div id="twc-ping-slots"></div>
-                <button id="twc-ping-save">Save</button>
+                <div id="twc-ping-columns">
+                    <div class="twc-ping-column">
+                        <div class="twc-ping-column-title twc-ping-column-ally">Ally</div>
+                        <div id="twc-ping-slots-ally"></div>
+                    </div>
+                    <div class="twc-ping-column">
+                        <div class="twc-ping-column-title twc-ping-column-enemy">Enemy</div>
+                        <div id="twc-ping-slots-enemy"></div>
+                    </div>
+                </div>
+                <button id="twc-ping-save">Save Both</button>
             </div>
         `;
         document.body.appendChild(pingModal);
 
-        function renderPingSlotEditor() {
-            const container = document.getElementById('twc-ping-slots');
+        function renderPingSlotEditor(side) {
+            const container = document.getElementById(side === 'enemy' ? 'twc-ping-slots-enemy' : 'twc-ping-slots-ally');
             if (!container) return;
-            const slots = ensurePingSlots();
+            const slots = ensurePingSlots(side);
 
             container.innerHTML = slots
                 .map((slot) => {
-                    const fired = lastFired[slot.id];
-                    const firedText = fired ? `Last fired: ${fired.playerName}, ${Math.round((Date.now() - fired.at) / 1000)}s ago` : 'Not fired yet this session';
+                    const fired = lastFired[`${side}:${slot.id}`];
+                    const firedText = fired ? `Last fired: ${fired.playerName}, ${formatTime(Math.round((Date.now() - fired.at) / 1000))} ago` : 'Not fired yet this session';
                     return `
                         <div class="twc-ping-slot ${slot.enabled ? 'twc-ping-slot-active' : ''}">
                             <div class="twc-ping-slot-row">
                                 <label class="twc-ping-toggle">
-                                    <input type="checkbox" class="twc-ping-enabled" data-slot="${slot.id}" ${slot.enabled ? 'checked' : ''}>
+                                    <input type="checkbox" class="twc-ping-enabled" data-side="${side}" data-slot="${slot.id}" ${slot.enabled ? 'checked' : ''}>
                                     Slot ${slot.id}
                                 </label>
                                 <span class="twc-ping-status">${slot.enabled ? 'ACTIVE' : 'off'}</span>
                             </div>
                             <div class="twc-field-label">Fire when this many seconds remain</div>
-                            <input type="text" inputmode="numeric" class="twc-ping-threshold" data-slot="${slot.id}" value="${slot.thresholdSeconds}">
+                            <input type="text" inputmode="numeric" class="twc-ping-threshold" data-side="${side}" data-slot="${slot.id}" value="${slot.thresholdSeconds}">
                             <div class="twc-field-label">Message</div>
-                            <input type="text" class="twc-ping-message" data-slot="${slot.id}" value="${escapeHtml(slot.message)}">
+                            <input type="text" class="twc-ping-message" data-side="${side}" data-slot="${slot.id}" value="${escapeHtml(slot.message)}">
                             <div class="twc-ping-meta">${firedText}</div>
-                            <button class="twc-ping-test" data-slot="${slot.id}">Test Slot ${slot.id}</button>
+                            <button class="twc-ping-test" data-side="${side}" data-slot="${slot.id}">Test Slot ${slot.id}</button>
                         </div>
                     `;
                 })
@@ -1201,19 +1333,21 @@
 
             container.querySelectorAll('.twc-ping-test').forEach((btn) => {
                 btn.addEventListener('click', () => {
+                    const testSide = btn.dataset.side;
                     const slotId = Number(btn.dataset.slot);
-                    const slot = ensurePingSlots().find((s) => s.id === slotId);
+                    const slot = ensurePingSlots(testSide).find((s) => s.id === slotId);
                     if (!slot) return;
                     // Bypass dedup entirely for a manual test — fake player, fake `until`.
                     const fakePlayer = { id: 0, name: 'Test Player', level: 1, until: Math.floor(Date.now() / 1000) + slot.thresholdSeconds };
                     firedPings.delete(`${slot.id}:0:${fakePlayer.until}`);
-                    firePing(slot, fakePlayer, 'enemy', slot.thresholdSeconds);
+                    firePing(slot, fakePlayer, testSide, slot.thresholdSeconds);
                 });
             });
         }
 
         function openPingConfig() {
-            renderPingSlotEditor();
+            renderPingSlotEditor('ally');
+            renderPingSlotEditor('enemy');
             pingModal.classList.add('open');
             backdrop.classList.add('open');
         }
@@ -1226,23 +1360,26 @@
         document.getElementById('twc-ping-close').addEventListener('click', closePingConfig);
 
         document.getElementById('twc-ping-save').addEventListener('click', () => {
-            const slots = ensurePingSlots();
-            document.querySelectorAll('.twc-ping-enabled').forEach((el) => {
-                const slot = slots.find((s) => s.id === Number(el.dataset.slot));
-                if (slot) slot.enabled = el.checked;
+            ['ally', 'enemy'].forEach((side) => {
+                const slots = ensurePingSlots(side);
+                document.querySelectorAll(`.twc-ping-enabled[data-side="${side}"]`).forEach((el) => {
+                    const slot = slots.find((s) => s.id === Number(el.dataset.slot));
+                    if (slot) slot.enabled = el.checked;
+                });
+                document.querySelectorAll(`.twc-ping-threshold[data-side="${side}"]`).forEach((el) => {
+                    const slot = slots.find((s) => s.id === Number(el.dataset.slot));
+                    if (slot) slot.thresholdSeconds = Math.max(1, Number(el.value) || slot.thresholdSeconds);
+                });
+                document.querySelectorAll(`.twc-ping-message[data-side="${side}"]`).forEach((el) => {
+                    const slot = slots.find((s) => s.id === Number(el.dataset.slot));
+                    if (slot) slot.message = el.value.trim() || slot.message;
+                });
+                userConfig[side === 'enemy' ? 'pingSlotsEnemy' : 'pingSlotsAlly'] = slots;
             });
-            document.querySelectorAll('.twc-ping-threshold').forEach((el) => {
-                const slot = slots.find((s) => s.id === Number(el.dataset.slot));
-                if (slot) slot.thresholdSeconds = Math.max(1, Number(el.value) || slot.thresholdSeconds);
-            });
-            document.querySelectorAll('.twc-ping-message').forEach((el) => {
-                const slot = slots.find((s) => s.id === Number(el.dataset.slot));
-                if (slot) slot.message = el.value.trim() || slot.message;
-            });
-            userConfig.pingSlots = slots;
             ConfigStore.save(userConfig);
-            Debug.log('info', 'PingSystem', 'Ping slot configuration saved.');
-            renderPingSlotEditor();
+            Debug.log('info', 'PingSystem', 'Ping slot configuration saved for both sides.');
+            renderPingSlotEditor('ally');
+            renderPingSlotEditor('enemy');
             closePingConfig();
         });
 
@@ -1250,7 +1387,7 @@
         debugModal.id = 'twc-debug-modal';
         debugModal.innerHTML = `
             <div id="twc-debug-header">
-                <span>Debug Log</span>
+                <span>Debug</span>
                 <span id="twc-debug-close">✕</span>
             </div>
             <div id="twc-debug-state"></div>
@@ -1259,12 +1396,130 @@
                 <button id="twc-debug-test">Send Test Alert</button>
                 <button id="twc-debug-clear">Clear Log</button>
             </div>
+            <div id="twc-debug-tabs">
+                <button class="twc-debug-tab-btn" data-tab="log">Log</button>
+                <button class="twc-debug-tab-btn" data-tab="history">History</button>
+                <button class="twc-debug-tab-btn" data-tab="health">Health</button>
+            </div>
             <div id="twc-debug-filters"></div>
             <div id="twc-debug-body"></div>
         `;
         document.body.appendChild(debugModal);
 
         let debugFilter = null;
+        let debugTab = 'log';
+
+        function renderDebugTabs() {
+            debugModal.querySelectorAll('.twc-debug-tab-btn').forEach((btn) => {
+                btn.classList.toggle('active', btn.dataset.tab === debugTab);
+            });
+            document.getElementById('twc-debug-filters').style.display = debugTab === 'log' ? 'flex' : 'none';
+        }
+
+        // Human-readable formatting per History event type — matches the
+        // exact shapes each History.add() call site actually produces.
+        function formatHistoryEntry(e) {
+            switch (e.type) {
+                case 'log': return `[${SEVERITY[e.severity]?.label || e.severity}] ${e.source}: ${e.message}`;
+                case 'state_change': return `War state changed: ${e.from} → ${e.to}`;
+                case 'travel_started': return `Travel started: Torn → ${e.destination}`;
+                case 'return_started': return `Return travel started: ${e.destination} → Torn`;
+                case 'arrived_home': return 'Arrived back in Torn';
+                case 'arrived_abroad': return `Arrived in ${e.destination}`;
+                case 'ping_sent': return `Ping fired — slot ${e.slot} (${e.side}) for ${e.name}`;
+                case 'script_initialized': return 'Script initialized';
+                default: return e.type;
+            }
+        }
+
+        function renderHistoryTab() {
+            const body = document.getElementById('twc-debug-body');
+            if (!body) return;
+            const items = History.get().slice().reverse(); // newest first
+            if (!items.length) {
+                body.innerHTML = `<div class="twc-empty">No history yet.</div>`;
+                return;
+            }
+            body.innerHTML = items
+                .map((e) => `
+                    <div class="twc-log-line">
+                        <span class="twc-log-time">${new Date(e.timestamp * 1000).toLocaleString()}</span>
+                        <span class="twc-log-msg">${escapeHtml(formatHistoryEntry(e))}</span>
+                    </div>
+                `)
+                .join('');
+        }
+
+        // Health checks — each returns { name, pass, message }. Independent
+        // ally/enemy webhook items per explicit instruction, not one
+        // combined "Discord configured" check.
+        function runHealthChecks() {
+            const checks = [];
+            checks.push({
+                name: 'War detection',
+                pass: !data.lastError,
+                message: data.lastError || `Current state: ${StateMachine.getState()}`
+            });
+            checks.push({
+                name: 'Faction page detection',
+                pass: true,
+                message: Visibility.isOnFactionPage() ? 'Currently on a faction page' : 'Not on a faction page (panel hidden by design)'
+            });
+            checks.push({
+                name: 'Poll timer',
+                pass: !!pollTimeoutHandle,
+                message: pollTimeoutHandle ? 'Running' : 'Not scheduled — this is a real problem'
+            });
+            let storageOk = false;
+            try {
+                localStorage.setItem('twc-health-check', '1');
+                storageOk = localStorage.getItem('twc-health-check') === '1';
+                localStorage.removeItem('twc-health-check');
+            } catch (e) { storageOk = false; }
+            checks.push({ name: 'Storage', pass: storageOk, message: storageOk ? 'Read/write OK' : 'localStorage unavailable' });
+            checks.push({
+                name: 'Ping system active',
+                pass: isPingSystemActive(),
+                message: isPingSystemActive() ? 'Active for current war state' : 'Inactive (only runs during Prep/Active War)'
+            });
+            checks.push({
+                name: 'Ally Discord webhook',
+                pass: !!userConfig.discordWebhookAlly,
+                message: userConfig.discordWebhookAlly ? 'Configured' : 'Not set in Settings'
+            });
+            checks.push({
+                name: 'Enemy Discord webhook',
+                pass: !!userConfig.discordWebhookEnemy,
+                message: userConfig.discordWebhookEnemy ? 'Configured' : 'Not set in Settings'
+            });
+            checks.push({ name: 'UI initialized', pass: !!panelEl && document.body.contains(panelEl), message: panelEl ? 'Panel is in the DOM' : 'Panel missing' });
+            checks.push({
+                name: 'Config loaded',
+                pass: !!(userConfig.apiKey && userConfig.ownFactionId),
+                message: (userConfig.apiKey && userConfig.ownFactionId) ? 'API key and Faction ID set' : 'Missing API key or Faction ID'
+            });
+            checks.push({
+                name: 'State sync',
+                pass: StateMachine.getState() !== StateMachine.STATES.UNKNOWN,
+                message: StateMachine.getState() === StateMachine.STATES.UNKNOWN ? 'Still syncing — normal only right after load' : 'Synced'
+            });
+            return checks;
+        }
+
+        function renderHealthTab() {
+            const body = document.getElementById('twc-debug-body');
+            if (!body) return;
+            const checks = runHealthChecks();
+            body.innerHTML = checks
+                .map((c) => `
+                    <div class="twc-health-row ${c.pass ? 'twc-health-pass' : 'twc-health-fail'}">
+                        <span class="twc-health-icon">${c.pass ? '✓' : '✕'}</span>
+                        <span class="twc-health-name">${escapeHtml(c.name)}</span>
+                        <span class="twc-health-msg">${escapeHtml(c.message)}</span>
+                    </div>
+                `)
+                .join('');
+        }
 
         function renderDebugState() {
             const el = document.getElementById('twc-debug-state');
@@ -1276,7 +1531,8 @@
                 apiKey: ${present(userConfig.apiKey)}<br>
                 ownFactionId: ${userConfig.ownFactionId || '<span class="twc-bad">EMPTY</span>'}<br>
                 enemyFactionId (pinned): ${userConfig.enemyFactionId || '<span style="opacity:.5">auto-detect</span>'}<br>
-                discordWebhook: ${present(userConfig.discordWebhook)}<br>
+                allyWebhook: ${present(userConfig.discordWebhookAlly)}<br>
+                enemyWebhook: ${present(userConfig.discordWebhookEnemy)}<br>
                 traveling: ${yn(travelState.active)}${travelState.active ? ` (${travelState.phase}, ${travelState.destination})` : ''}<br>
                 last error: ${data.lastError ? `<span class="twc-bad">${escapeHtml(data.lastError)}</span>` : '<span class="twc-ok">none</span>'}
             `;
@@ -1300,6 +1556,11 @@
 
         function renderDebugModal(filterSeverity) {
             renderDebugState();
+            renderDebugTabs();
+
+            if (debugTab === 'history') return renderHistoryTab();
+            if (debugTab === 'health') return renderHealthTab();
+
             const body = document.getElementById('twc-debug-body');
             if (!body) return;
             const entries = filterSeverity
@@ -1323,7 +1584,15 @@
                 .join('');
         }
 
+        debugModal.querySelectorAll('.twc-debug-tab-btn').forEach((btn) => {
+            btn.addEventListener('click', () => {
+                debugTab = btn.dataset.tab;
+                renderDebugModal(debugFilter);
+            });
+        });
+
         function openDebug(filterSeverity) {
+            debugTab = 'log';
             debugFilter = filterSeverity || null;
             renderDebugFilters();
             renderDebugModal(debugFilter);
@@ -1343,16 +1612,18 @@
 
         document.getElementById('twc-debug-test').addEventListener('click', () => {
             Debug.log('info', 'Debug', 'Manual test alert triggered — bypassing all hospital/war checks.');
-            Discord.send({
-                embeds: [{
-                    title: 'War Call test ping',
-                    description: 'If you see this in Discord, your webhook is configured correctly.',
-                    color: 0x00eaff
-                }]
-            }).then(() => {
-                Debug.log('success', 'Debug', 'Test alert sent successfully.');
-            }).catch((err) => {
-                Debug.log('error', 'Debug', `Test alert failed: ${err.message}`);
+            ['ally', 'enemy'].forEach((side) => {
+                Discord.send({
+                    embeds: [{
+                        title: `War Call test ping (${side})`,
+                        description: `If you see this in Discord, your ${side} webhook is configured correctly.`,
+                        color: side === 'enemy' ? 0xff5c5c : 0x39ff8a
+                    }]
+                }, side).then(() => {
+                    Debug.log('success', 'Debug', `${side} test alert sent successfully.`);
+                }).catch((err) => {
+                    Debug.log('error', 'Debug', `${side} test alert failed: ${err.message}`);
+                });
             });
         });
 
@@ -1388,7 +1659,9 @@
             userConfig.apiKey = document.getElementById('twc-input-apikey').value.trim();
             userConfig.ownFactionId = document.getElementById('twc-input-ownfaction').value.trim();
             userConfig.enemyFactionId = document.getElementById('twc-input-enemyfaction').value.trim();
-            userConfig.discordWebhook = document.getElementById('twc-input-webhook').value.trim();
+            userConfig.discordWebhookAlly = document.getElementById('twc-input-webhook-ally').value.trim();
+            userConfig.discordWebhookEnemy = document.getElementById('twc-input-webhook-enemy').value.trim();
+            delete userConfig.discordWebhook; // migrated to the ally/enemy split — no longer used anywhere
             ConfigStore.save(userConfig);
             Debug.log('info', 'Settings', 'Configuration saved.');
             closeSettings();
@@ -1396,10 +1669,108 @@
             poll();
         });
 
+        const EXPORT_FORMAT_VERSION = 1;
+
+        document.getElementById('twc-export-config').addEventListener('click', () => {
+            const payload = {
+                exportFormatVersion: EXPORT_FORMAT_VERSION,
+                exportedAt: new Date().toISOString(),
+                scriptVersion: BuildInfo.version,
+                userConfig,
+                uiPrefs
+            };
+            const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `torn-war-call-config-${new Date().toISOString().slice(0, 10)}.json`;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            URL.revokeObjectURL(url);
+            Debug.log('success', 'Settings', 'Configuration exported.');
+        });
+
+        document.getElementById('twc-import-config').addEventListener('click', () => {
+            document.getElementById('twc-import-file').click();
+        });
+
+        document.getElementById('twc-import-file').addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = () => {
+                let parsed;
+                try {
+                    parsed = JSON.parse(reader.result);
+                } catch (err) {
+                    Debug.log('error', 'Settings', `Import failed: file is not valid JSON (${err.message}).`);
+                    alert('Import failed: that file is not valid JSON.');
+                    return;
+                }
+
+                // Validate shape before touching anything — reject gracefully
+                // rather than half-applying a corrupted or foreign file.
+                if (!parsed || typeof parsed !== 'object' || !parsed.userConfig || typeof parsed.userConfig !== 'object') {
+                    Debug.log('error', 'Settings', 'Import failed: file is missing expected userConfig structure.');
+                    alert('Import failed: this doesn\'t look like a Torn War Call export.');
+                    return;
+                }
+
+                if (typeof parsed.exportFormatVersion !== 'number' || parsed.exportFormatVersion > EXPORT_FORMAT_VERSION) {
+                    Debug.log('error', 'Settings', `Import failed: export format version ${parsed.exportFormatVersion} is newer than this script supports (${EXPORT_FORMAT_VERSION}).`);
+                    alert('Import failed: this file was exported from a newer version of the script than you\'re running.');
+                    return;
+                }
+
+                Object.assign(userConfig, parsed.userConfig);
+                delete userConfig.discordWebhook; // in case an old export predates the ally/enemy split
+                if (parsed.uiPrefs && typeof parsed.uiPrefs === 'object') {
+                    Object.assign(uiPrefs, parsed.uiPrefs);
+                    saveUiPrefs();
+                }
+                ConfigStore.save(userConfig);
+
+                Debug.log('success', 'Settings', `Configuration imported from a v${parsed.scriptVersion || 'unknown'} export.`);
+                closeSettings();
+                StateMachine.setState(StateMachine.STATES.UNKNOWN, { forceRecover: true, reason: 'config imported' });
+                poll();
+            };
+            reader.onerror = () => {
+                Debug.log('error', 'Settings', 'Import failed: could not read the file.');
+            };
+            reader.readAsText(file);
+            e.target.value = ''; // allow re-importing the same filename later
+        });
+
         document.getElementById('twc-debug-btn').addEventListener('click', () => openDebug());
 
         document.getElementById('twc-collapse-btn').addEventListener('click', () => setCollapsed(true));
         document.getElementById('twc-hide-btn').addEventListener('click', () => setHidden(true));
+
+        // Per-section (Enemy/Ally) collapse — independent of the whole-panel
+        // collapse above. Persisted so it survives a page reload.
+        function applySectionCollapse(section) {
+            const listEl = document.getElementById(section === 'enemy' ? 'twc-enemy-list' : 'twc-ally-list');
+            const toggleEl = panelEl.querySelector(`.twc-section-toggle[data-section="${section}"]`);
+            if (!listEl || !toggleEl) return;
+            const isCollapsed = !!uiPrefs.sectionsCollapsed[section];
+            listEl.classList.toggle('twc-section-collapsed', isCollapsed);
+            toggleEl.classList.toggle('twc-section-collapsed', isCollapsed);
+        }
+
+        panelEl.querySelectorAll('.twc-section-toggle').forEach((toggleEl) => {
+            toggleEl.addEventListener('click', () => {
+                const section = toggleEl.dataset.section;
+                uiPrefs.sectionsCollapsed[section] = !uiPrefs.sectionsCollapsed[section];
+                saveUiPrefs();
+                applySectionCollapse(section);
+            });
+        });
+
+        applySectionCollapse('enemy');
+        applySectionCollapse('ally');
 
         document.getElementById('twc-status').addEventListener('click', () => {
             if (StateMachine.getState() === StateMachine.STATES.FAILURE) {
@@ -1470,7 +1841,7 @@
     }
 
     function renderStatusHeader() {
-        const el = document.getElementById('twc-status');
+        const el = els.status;
         if (!el) return;
 
         const current = StateMachine.getState();
@@ -1489,31 +1860,59 @@
         el.classList.toggle('clickable', current === StateMachine.STATES.FAILURE);
     }
 
+    // Classifies a member into what the panel actually needs to show for
+    // them right now — null means "nothing relevant, don't render this row".
+    function classifyPlayer(member, now) {
+        const state = String(member.state || '').toLowerCase();
+        if (state === 'hospital' && member.until > now) return 'hospital';
+        if (state === 'traveling') return 'traveling';
+        if (state === 'abroad') return 'abroad';
+        return null;
+    }
+
     function renderPlayer(player, now) {
-        const secondsLeft = Math.max(0, player.until - now);
-        const warning = secondsLeft <= WARNING_SECONDS;
+        if (player._kind === 'hospital') {
+            const secondsLeft = Math.max(0, player.until - now);
+            const warning = secondsLeft <= WARNING_SECONDS;
+            return `
+                <div class="twc-player ${warning ? 'twc-warning' : ''}">
+                    <div class="twc-player-name">
+                        <a href="${escapeHtml(getPlayerUrl(player.id))}" target="_blank" rel="noopener noreferrer">${escapeHtml(player.name)}</a>
+                    </div>
+                    <div class="twc-player-meta">Lv. ${escapeHtml(player.level || '?')} · ${escapeHtml(formatTime(secondsLeft))}</div>
+                </div>
+            `;
+        }
+
+        // traveling or abroad — no urgency pulse, just status + countdown
+        // if one applies (traveling members have an arrival `until`;
+        // stationary "abroad" members don't, confirmed via live API data).
+        const hasCountdown = player._kind === 'traveling' && player.until > now;
+        const metaText = hasCountdown
+            ? `${player.description || 'Traveling'} · ${formatTime(player.until - now)}`
+            : (player.description || (player._kind === 'abroad' ? 'Abroad' : 'Traveling'));
+
         return `
-            <div class="twc-player ${warning ? 'twc-warning' : ''}">
+            <div class="twc-player twc-player-travel">
                 <div class="twc-player-name">
                     <a href="${escapeHtml(getPlayerUrl(player.id))}" target="_blank" rel="noopener noreferrer">${escapeHtml(player.name)}</a>
                 </div>
-                <div class="twc-player-meta">Lv. ${escapeHtml(player.level || '?')} · ${escapeHtml(formatTime(secondsLeft))}</div>
+                <div class="twc-player-meta">${escapeHtml(metaText)}</div>
             </div>
         `;
     }
 
-    function renderPlayerList(elementId, players, now) {
-        const element = document.getElementById(elementId);
+    function renderPlayerList(element, players, now) {
         if (!element) return;
         if (!players.length) {
-            element.innerHTML = `<div class="twc-empty">No one currently in hospital.</div>`;
+            element.innerHTML = `<div class="twc-empty">Nothing to show right now.</div>`;
             return;
         }
         element.innerHTML = players.map((p) => renderPlayer(p, now)).join('');
     }
 
     function renderTravel() {
-        const el = document.getElementById('twc-travel');
+        const el = els.travel;
         if (!el) return;
 
         if (!travelState.active) {
@@ -1543,60 +1942,61 @@
         }
     }
 
-    function renderTravelingMembers() {
-        const el = document.getElementById('twc-traveling-list');
-        if (!el) return;
+    // Combines hospital + traveling + abroad into one sorted list per side.
+    // Hospital entries always sort first (most actionable — this is what a
+    // war-call panel exists for), then traveling/abroad entries by soonest
+    // arrival, with stationary "abroad" entries (no countdown) last.
+    function buildRelevantList(list, now) {
+        return list
+            .map((m) => ({ ...m, _kind: classifyPlayer(m, now) }))
+            .filter((m) => m._kind)
+            .map((m) => ({
+                ...m,
+                _sortValue: m._kind === 'hospital'
+                    ? m.until - now
+                    : (m._kind === 'traveling' && m.until > now ? 1000000 + (m.until - now) : Infinity)
+            }))
+            .sort((a, b) => a._sortValue - b._sortValue);
+    }
 
-        const isAbroadOrTraveling = (m) => {
-            const s = m.state.toLowerCase();
-            return s === 'traveling' || s === 'abroad';
-        };
-
-        const allyAbroad = data.ally.filter(isAbroadOrTraveling).map((m) => ({ ...m, side: 'Ally' }));
-        const enemyAbroad = data.enemy.filter(isAbroadOrTraveling).map((m) => ({ ...m, side: 'Enemy' }));
-        const combined = [...allyAbroad, ...enemyAbroad];
-
-        if (!combined.length) {
-            el.innerHTML = `<div class="twc-empty">No one currently traveling or abroad.</div>`;
-            return;
-        }
-
-        el.innerHTML = combined
-            .map((m) => `
-                <div class="twc-player">
-                    <div class="twc-player-name">
-                        <span class="twc-side-tag twc-side-${m.side.toLowerCase()}">${m.side}</span>
-                        <a href="${escapeHtml(getPlayerUrl(m.id))}" target="_blank" rel="noopener noreferrer">${escapeHtml(m.name)}</a>
-                    </div>
-                    <div class="twc-player-meta">${escapeHtml(m.description || m.state)}</div>
-                </div>
-            `)
-            .join('');
+    // Performance: the 1-second tick only needs to re-render when something
+    // on screen is actually counting down. During Peace, or when nobody's
+    // hospitalized/traveling, rebuilding the same static HTML every second
+    // is pure wasted DOM work. This is checked before the tick calls render()
+    // at all — see setInterval below.
+    function anyActiveCountdown() {
+        const now = Math.floor(Date.now() / 1000);
+        const hasCountdown = (list) => list.some((m) => {
+            const state = String(m.state || '').toLowerCase();
+            return (state === 'hospital' || state === 'traveling') && m.until > now;
+        });
+        return travelState.active || hasCountdown(data.enemy) || hasCountdown(data.ally);
     }
 
     function render() {
+        try {
+            renderInner();
+        } catch (err) {
+            // A render failure must never take down the whole script or spam
+            // an uncaught exception every second — log once and move on.
+            Debug.log('error', 'Render', `Render failed: ${err.message}`);
+        }
+    }
+
+    function renderInner() {
         const now = Math.floor(Date.now() / 1000);
-        const filterByStatus = (list) =>
-            list
-                .filter((m) => String(m.state || '').toLowerCase() === 'hospital' && m.until > now)
-                .map((m) => ({ ...m, secondsLeft: m.until - now }))
-                .sort((a, b) => a.secondsLeft - b.secondsLeft);
 
-        renderPlayerList('twc-enemy-list', filterByStatus(data.enemy), now);
-        renderPlayerList('twc-ally-list', filterByStatus(data.ally), now);
-        renderTravelingMembers();
+        renderPlayerList(els.enemyList, buildRelevantList(data.enemy, now), now);
+        renderPlayerList(els.allyList, buildRelevantList(data.ally, now), now);
 
-        const errorEl = document.getElementById('twc-error');
-        if (errorEl) errorEl.textContent = data.lastError || '';
+        if (els.error) els.error.textContent = data.lastError || '';
 
-        const updateEl = document.getElementById('twc-last-update');
-        if (updateEl) {
-            updateEl.textContent = data.lastUpdate ? `Last update: ${new Date(data.lastUpdate).toLocaleTimeString()}` : '';
+        if (els.lastUpdate) {
+            els.lastUpdate.textContent = data.lastUpdate ? `Last update: ${new Date(data.lastUpdate).toLocaleTimeString()}` : '';
         }
 
-        const versionEl = document.getElementById('twc-version');
-        if (versionEl) {
-            versionEl.textContent = `v${BuildInfo.version} · build ${BuildInfo.build} · ${BuildInfo.releaseDate} · init ${BuildInfo.initTime.toLocaleTimeString()}`;
+        if (els.version) {
+            els.version.textContent = `v${BuildInfo.version} · build ${BuildInfo.build} · ${BuildInfo.releaseDate} · init ${BuildInfo.initTime.toLocaleTimeString()}`;
         }
 
         renderStatusHeader();
@@ -1621,6 +2021,8 @@
     let polling = false;
     let pollTimeoutHandle = null;
     let backoffMs = 0;
+    let consecutiveFailures = 0;
+    const MAX_CONSECUTIVE_FAILURES = 5;
     const MAX_BACKOFF_MS = 5 * 60 * 1000; // never wait longer than 5 min between attempts
 
     // Torn API error format is "CODE: message" — code 5 is specifically
@@ -1661,7 +2063,19 @@
             const rankedWar = await WarDetection.getRankedWar(ownFactionId);
             const { phase, war, outcome } = WarDetection.derivePhase(rankedWar, now);
 
-            StateMachine.setState(phase, { war, outcome });
+            // Error recovery: reaching this line means the core API call
+            // succeeded. If we were previously in FAILURE, that's proof the
+            // underlying problem resolved itself — recover automatically
+            // instead of leaving the panel stuck showing "Script Failure"
+            // forever until someone manually re-saves Settings.
+            if (consecutiveFailures > 0) {
+                Debug.log('success', 'Poller', `Recovered after ${consecutiveFailures} consecutive failure(s).`);
+            }
+            consecutiveFailures = 0;
+
+            const stateMeta = { war, outcome };
+            if (StateMachine.getState() === StateMachine.STATES.FAILURE) stateMeta.forceRecover = true;
+            StateMachine.setState(phase, stateMeta);
 
             data.ally = await WarDetection.getOwnFactionMembers(ownFactionId);
 
@@ -1683,7 +2097,7 @@
             // waiting for ACTIVE_WAR, per spec.
             evaluatePings(data.enemy, 'enemy');
             evaluatePings(data.ally, 'ally');
-            pruneFiredPings([...data.ally, ...data.enemy]);
+            pruneFiredPings(data.ally, data.enemy);
 
             data.lastError = '';
             data.lastUpdate = Date.now();
@@ -1692,7 +2106,17 @@
             data.lastError = error?.message || String(error);
             data.lastUpdate = Date.now();
             if (isRateLimitError(data.lastError)) rateLimitHitThisCycle = true;
-            Debug.log('error', 'Poller', data.lastError);
+
+            consecutiveFailures++;
+            if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+                // Genuinely persistent — not a one-off network blip. This is
+                // the "recovery is impossible without intervention" case the
+                // spec calls out; everything below this threshold is treated
+                // as recoverable and doesn't escalate the state at all.
+                Debug.log('critical', 'Poller', `${consecutiveFailures} consecutive poll failures — last error: ${data.lastError}`);
+            } else {
+                Debug.log('error', 'Poller', `${data.lastError} (failure ${consecutiveFailures}/${MAX_CONSECUTIVE_FAILURES} before escalating)`);
+            }
             render();
         } finally {
             polling = false;
@@ -1747,10 +2171,14 @@
         // handler above for why this can't be gated to faction pages.
         startPolling();
 
-        // Fast local tick so hospital countdowns move every second instead
-        // of only jumping once per 15s poll cycle. Cheap — it's a DOM text
-        // update, not a network call.
-        setInterval(render, 1000);
+        // Fast local tick so hospital/travel countdowns move every second
+        // instead of only jumping once per 15s poll cycle. Gated on
+        // anyActiveCountdown() so idle periods (Peace, nobody hospitalized)
+        // don't rebuild static HTML every second for nothing — a real
+        // performance difference over a long session, not a cosmetic one.
+        setInterval(() => {
+            if (anyActiveCountdown()) render();
+        }, 1000);
 
         History.add({ type: 'script_initialized' });
         Debug.log('success', 'Init', `Torn War Call ${BuildInfo.version} initialized (${BuildInfo.phase})`);
