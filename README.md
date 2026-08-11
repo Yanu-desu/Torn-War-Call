@@ -1,6 +1,6 @@
 # Torn War Call
 
-If you like this, consider giving me a [![Ko-fi](https://img.shields.io/badge/Support%20me%20on-Ko--fi-ff5e5b?logo=ko-fi&logoColor=white)]([https://ko-fi.com/YOUR_KOFI_USERNAME](https://ko-fi.com/yanuuu))
+If you like this, consider giving me a [![Ko-fi](https://img.shields.io/badge/-Ko--fi-ff5e5b?logo=ko-fi&logoColor=white)]([https://ko-fi.com/YOUR_KOFI_USERNAME](https://ko-fi.com/yanuuu))
 
 A browser panel for Torn faction wars. It watches hospital timers for your
 faction and the enemy faction, tracks your own travel status, and can ping
