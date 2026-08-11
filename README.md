@@ -55,6 +55,11 @@ The API only **READS** you, your faction member and enemy hospital time, travel 
 - The panel only shows up on faction pages — it gets out of your way
   everywhere else on Torn.
 
+## What it deliberately does NOT do
+* No auto-attacking. No auto-anything on Torn's side. This only reads data and
+  posts to Discord. Wire up attack automation and you're gambling with
+  a ban — not my problem to solve, and you shouldn't want it solved.
+  
 ## Backing up your settings
 
 Settings → **Export Config** downloads a JSON file with everything (API
